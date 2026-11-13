@@ -1,0 +1,48 @@
+name: build-windows-installer
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Cai thu vien
+        run: pip install -r requirements.txt
+
+      - name: Tai FFmpeg
+        shell: pwsh
+        run: |
+          Invoke-WebRequest https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip -OutFile ff.zip
+          Expand-Archive ff.zip ffx
+          New-Item -ItemType Directory ffmpeg -Force | Out-Null
+          Copy-Item (Get-ChildItem ffx -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName ffmpeg\
+          Copy-Item (Get-ChildItem ffx -Recurse -Filter ffprobe.exe | Select-Object -First 1).FullName ffmpeg\
+
+      - name: Dong goi bang PyInstaller
+        shell: cmd
+        run: >
+          pyinstaller --noconfirm --windowed --name VideoAITool
+          --collect-all faster_whisper --collect-all ctranslate2 --collect-all argostranslate
+          --collect-all edge_tts --collect-all pyttsx3 --hidden-import pyttsx3.drivers.sapi5
+          --add-binary "ffmpeg\ffmpeg.exe;ffmpeg" --add-binary "ffmpeg\ffprobe.exe;ffmpeg"
+          main.py
+
+      - name: Tao bo cai dat
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          & "C:\Program Files (x86)\Inno Setup 6\ISCC.exe" installer.iss
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: VideoAITool-Setup
+          path: Output/VideoAITool-Setup.exe
