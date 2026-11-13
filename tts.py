@@ -1,6 +1,8 @@
 """Lồng tiếng: tạo giọng đọc cho từng đoạn rồi ghép đúng mốc thời gian."""
 import asyncio
 import os
+import re
+import time
 import wave
 
 import numpy as np
@@ -11,12 +13,36 @@ from ffmpeg_utils import convert_clip
 SR = 24000
 MAX_SPEEDUP = 1.6
 
+_JUNK = re.compile(r"[♪♫♬♩\*_#~`<>\[\]\{\}\|\\^]")
 
-def _synth_one_edge(text, path, voice, speed):
+
+def _clean(text):
+    """Bỏ ký hiệu không đọc được, gộp khoảng trắng."""
+    text = _JUNK.sub(" ", text)
+    return re.sub(r"\s+", " ", text).strip()
+
+
+def _speakable(text):
+    return any(ch.isalnum() for ch in text)
+
+
+def _synth_one_edge(text, path, voice, speed, cancel):
     import edge_tts
 
     rate = f"{int(round((speed - 1) * 100)):+d}%"
-    asyncio.run(edge_tts.Communicate(text, voice, rate=rate).save(path))
+    last = None
+    for attempt in range(3):
+        if cancel.is_set():
+            raise Cancelled()
+        try:
+            asyncio.run(edge_tts.Communicate(text, voice, rate=rate).save(path))
+            if os.path.exists(path) and os.path.getsize(path) > 0:
+                return
+            last = RuntimeError("file âm thanh rỗng")
+        except Exception as e:
+            last = e
+        time.sleep(1.0 + attempt)
+    raise last
 
 
 def _make_sapi():
@@ -58,17 +84,20 @@ def synthesize_dub(segments, engine, voice, speed, api_key, total_duration, out_
     last_end = max((s.end for s in segments), default=0)
     length = int((max(total_duration, last_end) + 2) * SR)
     track = np.zeros(length, dtype=np.int32)
+    skipped = failed = 0
 
     for i, seg in enumerate(segments):
         if cancel.is_set():
             raise Cancelled()
-        text = seg.text.strip()
-        if not text:
+        text = _clean(seg.text)
+        if not _speakable(text):
+            skipped += 1          # câu chỉ có ký hiệu / rỗng: bỏ qua, không phải lỗi
+            progress(int((i + 1) / len(segments) * 100))
             continue
         raw = os.path.join(tmp_dir, f"clip{i}.{'wav' if engine == 'sapi' else 'mp3'}")
         try:
             if engine == "edge":
-                _synth_one_edge(text, raw, voice, speed)
+                _synth_one_edge(text, raw, voice, speed, cancel)
             elif engine == "openai":
                 _synth_one_openai(client, text, raw, voice, speed)
             else:
@@ -94,8 +123,14 @@ def synthesize_dub(segments, engine, voice, speed, api_key, total_duration, out_
         except Cancelled:
             raise
         except Exception as e:
-            log(f"Lỗi tạo giọng câu {i + 1}: {e}")
+            failed += 1
+            log(f"Lỗi tạo giọng câu {i + 1}: {e} | nội dung: \"{text[:60]}\"")
         progress(int((i + 1) / len(segments) * 100))
+
+    if skipped:
+        log(f"Đã bỏ qua {skipped} câu không có nội dung đọc được (chỉ có ký hiệu).")
+    if failed:
+        log(f"Cảnh báo: {failed} câu không tạo được giọng. Xem nội dung các câu lỗi ở trên.")
 
     track = np.clip(track, -32768, 32767).astype(np.int16)
     with wave.open(out_wav, "wb") as wf:
