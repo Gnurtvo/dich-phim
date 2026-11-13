@@ -39,10 +39,11 @@ def find_tool(name: str) -> str:
     )
 
 
-def run_ffmpeg(args, cancel=None):
+def run_ffmpeg(args, cancel=None, cwd=None):
     cmd = [find_tool("ffmpeg"), "-y", "-hide_banner", "-loglevel", "error", "-nostdin", *map(str, args)]
     with tempfile.TemporaryFile() as err:
-        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err, creationflags=CREATE_NO_WINDOW)
+        proc = subprocess.Popen(cmd, stdout=subprocess.DEVNULL, stderr=err,
+                                creationflags=CREATE_NO_WINDOW, cwd=cwd)
         while True:
             try:
                 proc.wait(timeout=0.3)
@@ -96,8 +97,17 @@ def convert_clip(src: str, dst: str, tempo: float = 1.0, cancel=None):
     run_ffmpeg([*args, "-c:a", "pcm_s16le", dst], cancel)
 
 
-def final_mux(video, out_path, dub_wav=None, srt=None, orig_volume=0.1, strip_metadata=False, cancel=None):
-    """Ghép video + (tiếng lồng) + (phụ đề mềm), tùy chọn xóa metadata."""
+def final_mux(video, out_path, dub_wav=None, srt=None, orig_volume=0.1, strip_metadata=False,
+              burn_srt=None, cancel=None):
+    """Ghép video + (tiếng lồng) + (phụ đề mềm hoặc ghi cứng), tùy chọn xóa metadata."""
+    video, out_path = os.path.abspath(video), os.path.abspath(out_path)
+    dub_wav = os.path.abspath(dub_wav) if dub_wav else None
+    srt = os.path.abspath(srt) if srt and not burn_srt else None
+    sub_dir = None
+    if burn_srt:
+        # ffmpeg chạy trong thư mục tạm với tên file đơn giản để tránh lỗi đường dẫn Windows (C:\...)
+        sub_dir = tempfile.mkdtemp(prefix="vat_sub_")
+        shutil.copyfile(burn_srt, os.path.join(sub_dir, "sub.srt"))
     args = ["-i", video]
     idx = 1
     dub_idx = srt_idx = None
@@ -120,7 +130,11 @@ def final_mux(video, out_path, dub_wav=None, srt=None, orig_volume=0.1, strip_me
         args += ["-c:a", "aac", "-b:a", "192k"]
     else:
         args += ["-map", "0:a?", "-c:a", "copy"]
-    args += ["-c:v", "copy"]
+    if burn_srt:
+        args += ["-vf", "subtitles=sub.srt:force_style='FontName=Arial,FontSize=20,Outline=1'",
+                 "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
+    else:
+        args += ["-c:v", "copy"]
 
     if srt_idx is not None:
         sub_codec = "srt" if out_path.lower().endswith(".mkv") else "mov_text"
@@ -133,4 +147,8 @@ def final_mux(video, out_path, dub_wav=None, srt=None, orig_volume=0.1, strip_me
             "-metadata:s:v:0", "handler_name=", "-metadata:s:a:0", "handler_name=",
         ]
     args += ["-shortest"] if dub_idx is None else []
-    run_ffmpeg([*args, out_path], cancel)
+    try:
+        run_ffmpeg([*args, out_path], cancel, cwd=sub_dir)
+    finally:
+        if sub_dir:
+            shutil.rmtree(sub_dir, ignore_errors=True)
