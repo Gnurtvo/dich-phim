@@ -7,7 +7,7 @@ Có 3 chế độ:
 """
 import os
 import tempfile
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from common import Cancelled, read_srt, write_srt
@@ -25,6 +25,7 @@ class Options:
     do_dub: bool = True
     embed_subs: bool = False        # nhúng phụ đề mềm
     burn_subs: bool = False         # ghi cứng phụ đề vào hình (encode lại)
+    sub_size: int = 14              # cỡ chữ phụ đề ghi cứng (nhỏ hơn = chữ bé hơn)
     strip_metadata: bool = True
     # nhận dạng
     asr_engine: str = "local"       # local | openai
@@ -32,9 +33,15 @@ class Options:
     device: str = "auto"
     src_lang: str = "auto"
     # dịch
-    tr_engine: str = "google"       # argos | google | openai
+    tr_engine: str = "groq"         # groq | google | gemini | openai | ollama
+    groq_keys: list = field(default_factory=list)   # nhiều key Groq, tự xoay vòng
+    groq_model: str = "llama-3.3-70b-versatile"
     tgt_lang: str = "vi"
     openai_model: str = "gpt-4o-mini"
+    gemini_model: str = "gemini-3.8-flash"
+    gemini_key: str = ""
+    ollama_model: str = "qwen2.5:7b"
+    context_note: str = ""          # ghi chú ngữ cảnh cho bản dịch (thể loại, xưng hô, tên riêng...)
     # lồng tiếng
     tts_engine: str = "edge"        # edge | sapi | openai
     voice: str = ""
@@ -85,6 +92,11 @@ def process_video(video: str, o: Options, log, progress, cancel):
         used.append(o.tts_engine)
     if "openai" in used and not o.openai_key:
         raise RuntimeError("Bạn đã chọn tính năng dùng OpenAI nhưng chưa nhập API key.")
+    if "groq" in used and not [k for k in o.groq_keys if k.strip()]:
+        raise RuntimeError("Bạn đã chọn dịch bằng Groq nhưng chưa nhập API key Groq.")
+    if "gemini" in used and not o.gemini_key:
+        raise RuntimeError("Bạn đã chọn dịch bằng Gemini nhưng chưa nhập Gemini API key "
+                           "(lấy miễn phí tại aistudio.google.com).")
 
     segments = []
     src_srt = tgt_srt = None
@@ -142,7 +154,7 @@ def process_video(video: str, o: Options, log, progress, cancel):
 
             log("▶ Dịch phụ đề...")
             final_segments = translate_segments(
-                segments, detected, o.tgt_lang, o.tr_engine, o.openai_key, o.openai_model,
+                segments, detected, o.tgt_lang, o,
                 lambda v: progress(40 + int(v * 0.15)), cancel, log)
             tgt_srt = str(out_dir / f"{stem}.{o.tgt_lang}.srt")
             write_srt(final_segments, tgt_srt)
@@ -170,8 +182,9 @@ def process_video(video: str, o: Options, log, progress, cancel):
             log("▶ Xuất video cuối..." + (" (ghi cứng phụ đề nên sẽ lâu hơn)" if o.burn_subs and sub_file else ""))
             final_mux(video, out_video, dub_wav=dub_wav,
                       srt=sub_file if (o.embed_subs and not o.burn_subs) else None,
-                      burn_srt=sub_file if o.burn_subs else None,
-                      orig_volume=o.orig_volume, strip_metadata=o.strip_metadata, cancel=cancel)
+                      burn_srt=sub_file if o.burn_subs else None, sub_size=o.sub_size,
+                      orig_volume=o.orig_volume, strip_metadata=o.strip_metadata,
+                      cancel=cancel)
             log(f"✔ Hoàn tất: {out_video}")
         else:
             log("✔ Hoàn tất (chỉ xuất phụ đề).")

@@ -1,12 +1,13 @@
 """Giao diện PySide6."""
+import re
 import threading
 from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThread, Signal
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QGroupBox,
+    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QSpinBox, QFileDialog, QFormLayout, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QSlider, QVBoxLayout, QWidget,
+    QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from common import EDGE_VOICES, LANGS, OPENAI_VOICES
@@ -162,17 +163,33 @@ class MainWindow(QWidget):
         self.c_tr = QCheckBox("Dịch phụ đề")
         self.c_tr.setChecked(True)
         self.tr_engine = QComboBox()
-        self.tr_engine.addItem("Google (miễn phí, cần mạng)", "google")
-        self.tr_engine.addItem("Argos (offline)", "argos")
+        self.tr_engine.addItem("Groq (nhiều API key xoay vòng)", "groq")
+        self.tr_engine.addItem("Gemini (dịch hiểu ngữ cảnh, key miễn phí)", "gemini")
         self.tr_engine.addItem("OpenAI (chất lượng cao)", "openai")
+        self.tr_engine.addItem("Ollama – dịch hiểu ngữ cảnh (offline, miễn phí)", "ollama")
         self.tgt = QComboBox()
         for n, c in LANGS:
             self.tgt.addItem(n, c)
         self.oa_model = QLineEdit("gpt-4o-mini")
+        self.gq_model = QComboBox()
+        self.gq_model.setEditable(True)
+        self.gq_model.addItems(["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-20b"])
+        self.gm_model = QComboBox()
+        self.gm_model.setEditable(True)
+        self.gm_model.addItems(["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"])
+        self.ol_model = QComboBox()
+        self.ol_model.setEditable(True)
+        self.ol_model.addItems(["qwen2.5:7b", "qwen2.5:3b", "qwen2.5:14b", "gemma2:9b"])
+        self.note = QLineEdit()
+        self.note.setPlaceholderText("VD: phim tình cảm TQ, xưng hô anh/em, giữ tên nhân vật")
         f.addRow(self.c_tr)
         f.addRow("Engine:", self.tr_engine)
         f.addRow("Dịch sang:", self.tgt)
+        f.addRow("Model Groq:", self.gq_model)
+        f.addRow("Model Gemini:", self.gm_model)
+        f.addRow("Model Ollama:", self.ol_model)
         f.addRow("Model OpenAI:", self.oa_model)
+        f.addRow("Ngữ cảnh (tùy chọn):", self.note)
         self.g_tr = g
         right.addWidget(g)
 
@@ -202,6 +219,10 @@ class MainWindow(QWidget):
         f.addRow("Âm gốc còn lại (%):", self.vol)
         f.addRow(self.c_embed)
         f.addRow(self.c_burn)
+        self.sub_size = QSpinBox()
+        self.sub_size.setRange(6, 40)
+        self.sub_size.setValue(14)
+        f.addRow("Cỡ chữ phụ đề ghi cứng (nhỏ = chữ bé):", self.sub_size)
         right.addWidget(g)
 
         g = QGroupBox("4. Quyền riêng tư")
@@ -211,11 +232,19 @@ class MainWindow(QWidget):
         f.addRow(self.c_strip)
         right.addWidget(g)
 
-        g = QGroupBox("OpenAI API key (nếu dùng)")
+        g = QGroupBox("API key (nếu dùng)")
         f = QFormLayout(g)
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.Password)
-        f.addRow(self.key)
+        self.gkey = QLineEdit()
+        self.gkey.setEchoMode(QLineEdit.Password)
+        self.gkey.setPlaceholderText("Lấy miễn phí tại aistudio.google.com")
+        self.gqkeys = QPlainTextEdit()
+        self.gqkeys.setFixedHeight(80)
+        self.gqkeys.setPlaceholderText("Groq: mỗi dòng 1 key (gsk_...). Tự xoay vòng, key hết hạn mức thì chuyển key khác")
+        f.addRow("Groq (nhiều key):", self.gqkeys)
+        f.addRow("Gemini:", self.gkey)
+        f.addRow("OpenAI:", self.key)
         right.addWidget(g)
         right.addStretch(1)
         root.addLayout(right, 2)
@@ -233,10 +262,11 @@ class MainWindow(QWidget):
         self.g_asr.setEnabled(not from_srt)
         self.g_tr.setEnabled(not extract)
         # chế độ 'từ .srt': không dịch nữa, chỉ cần chọn ngôn ngữ đích (để chọn giọng đọc)
-        for w in (self.c_tr, self.tr_engine, self.oa_model):
+        for w in (self.c_tr, self.tr_engine, self.oa_model, self.gq_model, self.gm_model,
+                  self.ol_model, self.note):
             w.setEnabled(not from_srt)
         for w in (self.c_dub, self.tts_engine, self.voice, self.speed, self.vol,
-                  self.c_embed, self.c_burn, self.c_strip):
+                  self.c_embed, self.c_burn, self.sub_size, self.c_strip):
             w.setEnabled(not extract)
 
     def pick_srt(self):
@@ -292,6 +322,7 @@ class MainWindow(QWidget):
             do_dub=self.c_dub.isChecked(),
             embed_subs=self.c_embed.isChecked(),
             burn_subs=self.c_burn.isChecked(),
+            sub_size=self.sub_size.value(),
             strip_metadata=self.c_strip.isChecked(),
             asr_engine=self.asr_engine.currentData(),
             whisper_model=self.model.currentText(),
@@ -305,6 +336,12 @@ class MainWindow(QWidget):
             tts_speed=self.speed.value(),
             orig_volume=self.vol.value() / 100,
             openai_key=self.key.text().strip(),
+            groq_keys=[k for k in re.split(r"[\s,;]+", self.gqkeys.toPlainText()) if k],
+            groq_model=self.gq_model.currentText().strip() or "llama-3.3-70b-versatile",
+            gemini_key=self.gkey.text().strip(),
+            gemini_model=self.gm_model.currentText().strip() or "gemini-3.8-flash",
+            ollama_model=self.ol_model.currentText().strip() or "qwen2.5:7b",
+            context_note=self.note.text().strip(),
         )
 
     def start(self):
@@ -355,6 +392,13 @@ class MainWindow(QWidget):
     def _save(self):
         s = self.settings
         s.setValue("key", self.key.text())
+        s.setValue("gkey", self.gkey.text())
+        s.setValue("gqkeys", self.gqkeys.toPlainText())
+        s.setValue("gq_model", self.gq_model.currentText())
+        s.setValue("gm_model", self.gm_model.currentText())
+        s.setValue("ol_model", self.ol_model.currentText())
+        s.setValue("note", self.note.text())
+        s.setValue("sub_size", self.sub_size.value())
         s.setValue("out_dir", self.out_dir.text())
         s.setValue("model", self.model.currentText())
         s.setValue("tgt", self.tgt.currentIndex())
@@ -364,6 +408,13 @@ class MainWindow(QWidget):
     def _load(self):
         s = self.settings
         self.key.setText(s.value("key", ""))
+        self.gkey.setText(s.value("gkey", ""))
+        self.gqkeys.setPlainText(s.value("gqkeys", ""))
+        self.gq_model.setCurrentText(s.value("gq_model", "llama-3.3-70b-versatile"))
+        self.gm_model.setCurrentText(s.value("gm_model", "gemini-3.8-flash"))
+        self.ol_model.setCurrentText(s.value("ol_model", "qwen2.5:7b"))
+        self.note.setText(s.value("note", ""))
+        self.sub_size.setValue(int(s.value("sub_size", 14)))
         self.out_dir.setText(s.value("out_dir", ""))
         self.model.setCurrentText(s.value("model", "small"))
         self.tgt.setCurrentIndex(int(s.value("tgt", 0)))

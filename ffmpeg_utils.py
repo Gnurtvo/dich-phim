@@ -97,8 +97,26 @@ def convert_clip(src: str, dst: str, tempo: float = 1.0, cancel=None):
     run_ffmpeg([*args, "-c:a", "pcm_s16le", dst], cancel)
 
 
+def _effective_font_size(video, size):
+    """Cỡ chữ tính theo cạnh NGẮN của video.
+
+    ASS/libass quy cỡ chữ theo chiều cao khung hình, nên video dọc (9:16) sẽ bị chữ to quá
+    gấp ~1,8 lần. Hàm này thu nhỏ lại để cùng một con số cho chữ cùng kích thước ở cả hai loại video.
+    """
+    try:
+        out = subprocess.run(
+            [find_tool("ffprobe"), "-v", "error", "-select_streams", "v:0", "-show_entries",
+             "stream=width,height", "-print_format", "json", str(video)],
+            capture_output=True, creationflags=CREATE_NO_WINDOW)
+        st = json.loads(out.stdout)["streams"][0]
+        w, h = int(st["width"]), int(st["height"])
+        return max(4, round(int(size) * min(w, h) / h))
+    except Exception:
+        return int(size)
+
+
 def final_mux(video, out_path, dub_wav=None, srt=None, orig_volume=0.1, strip_metadata=False,
-              burn_srt=None, cancel=None):
+              burn_srt=None, sub_size=14, cancel=None):
     """Ghép video + (tiếng lồng) + (phụ đề mềm hoặc ghi cứng), tùy chọn xóa metadata."""
     video, out_path = os.path.abspath(video), os.path.abspath(out_path)
     dub_wav = os.path.abspath(dub_wav) if dub_wav else None
@@ -131,7 +149,8 @@ def final_mux(video, out_path, dub_wav=None, srt=None, orig_volume=0.1, strip_me
     else:
         args += ["-map", "0:a?", "-c:a", "copy"]
     if burn_srt:
-        args += ["-vf", "subtitles=sub.srt:force_style='FontName=Arial,FontSize=20,Outline=1'",
+        style = f"FontName=Arial,FontSize={_effective_font_size(video, sub_size)},Outline=1"
+        args += ["-vf", f"subtitles=sub.srt:force_style='{style}'",
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
     else:
         args += ["-c:v", "copy"]
