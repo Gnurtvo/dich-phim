@@ -1,4 +1,5 @@
 """Các kiểu dữ liệu và hằng số dùng chung."""
+import re
 from dataclasses import dataclass
 
 
@@ -56,3 +57,31 @@ def write_srt(segments, path: str) -> None:
     with open(path, "w", encoding="utf-8") as f:
         for i, seg in enumerate(segments, 1):
             f.write(f"{i}\n{_ts(seg.start)} --> {_ts(seg.end)}\n{seg.text.strip()}\n\n")
+
+
+_TIME_RE = re.compile(
+    r"(\d+):(\d{1,2}):(\d{1,2})[,.](\d{1,3})\s*-->\s*(\d+):(\d{1,2}):(\d{1,2})[,.](\d{1,3})")
+
+
+def _secs(h, m, s, ms) -> float:
+    return int(h) * 3600 + int(m) * 60 + int(s) + int(ms.ljust(3, "0")) / 1000
+
+
+def read_srt(path: str):
+    """Đọc file .srt (chịu được BOM, CRLF, đánh số sai, nhiều dòng, thẻ HTML/ASS)."""
+    with open(path, encoding="utf-8-sig", errors="replace") as f:
+        raw = f.read().replace("\r\n", "\n").replace("\r", "\n")
+    segs = []
+    for block in re.split(r"\n\s*\n", raw.strip()):
+        lines = block.split("\n")
+        for idx, line in enumerate(lines):
+            m = _TIME_RE.search(line)
+            if not m:
+                continue
+            g = m.groups()
+            text = " ".join(x.strip() for x in lines[idx + 1:] if x.strip())
+            text = re.sub(r"<[^>]+>|\{[^}]*\}", "", text).strip()
+            if text:
+                segs.append(Segment(_secs(*g[:4]), _secs(*g[4:]), text))
+            break
+    return segs
