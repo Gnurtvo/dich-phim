@@ -107,6 +107,32 @@ class MainWindow(QWidget):
         # cột phải: tùy chọn
         right = QVBoxLayout()
 
+        g = QGroupBox("Chế độ")
+        v = QVBoxLayout(g)
+        self.mode = QComboBox()
+        self.mode.addItem("Đầy đủ: nhận dạng → dịch → lồng tiếng", "full")
+        self.mode.addItem("Bước 1: chỉ tách phụ đề (.srt) rồi dừng", "extract_only")
+        self.mode.addItem("Bước 2: dùng phụ đề đã dịch → lồng tiếng + ghép video", "from_srt")
+        v.addWidget(self.mode)
+        self.srt_box = QWidget()
+        v2 = QVBoxLayout(self.srt_box)
+        v2.setContentsMargins(0, 0, 0, 0)
+        row = QHBoxLayout()
+        self.srt_file = QLineEdit()
+        self.srt_file.setPlaceholderText("File .srt đã dịch (để trống = tự tìm)")
+        b_srt = QPushButton("Chọn .srt...")
+        b_srt.clicked.connect(self.pick_srt)
+        row.addWidget(self.srt_file)
+        row.addWidget(b_srt)
+        v2.addLayout(row)
+        hint = QLabel("Để trống: tự tìm '<tên video>.<mã ngôn ngữ đích>.srt' (vd: phim.vi.srt) "
+                      "cạnh video hoặc trong thư mục xuất. Chọn nhiều video thì dùng cách đặt tên này. "
+                      "Giữ nguyên mốc thời gian khi dịch.")
+        hint.setWordWrap(True)
+        v2.addWidget(hint)
+        v.addWidget(self.srt_box)
+        right.addWidget(g)
+
         g = QGroupBox("1. Nhận dạng giọng nói")
         f = QFormLayout(g)
         self.c_asr = QCheckBox("Xuất phụ đề gốc (.srt)")
@@ -128,6 +154,7 @@ class MainWindow(QWidget):
         f.addRow("Model:", self.model)
         f.addRow("Thiết bị:", self.device)
         f.addRow("Ngôn ngữ gốc:", self.src)
+        self.g_asr = g
         right.addWidget(g)
 
         g = QGroupBox("2. Dịch bằng AI")
@@ -146,6 +173,7 @@ class MainWindow(QWidget):
         f.addRow("Engine:", self.tr_engine)
         f.addRow("Dịch sang:", self.tgt)
         f.addRow("Model OpenAI:", self.oa_model)
+        self.g_tr = g
         right.addWidget(g)
 
         g = QGroupBox("3. Lồng tiếng")
@@ -165,13 +193,15 @@ class MainWindow(QWidget):
         self.vol = QSlider(Qt.Horizontal)
         self.vol.setRange(0, 100)
         self.vol.setValue(10)
-        self.c_embed = QCheckBox("Nhúng phụ đề mềm vào video")
+        self.c_embed = QCheckBox("Nhúng phụ đề mềm vào video (bật/tắt được trong trình phát)")
+        self.c_burn = QCheckBox("Ghi cứng phụ đề vào hình (luôn hiện, chậm hơn vì encode lại)")
         f.addRow(self.c_dub)
         f.addRow("Engine:", self.tts_engine)
         f.addRow("Giọng:", self.voice)
         f.addRow("Tốc độ đọc:", self.speed)
         f.addRow("Âm gốc còn lại (%):", self.vol)
         f.addRow(self.c_embed)
+        f.addRow(self.c_burn)
         right.addWidget(g)
 
         g = QGroupBox("4. Quyền riêng tư")
@@ -193,6 +223,26 @@ class MainWindow(QWidget):
         self.tts_engine.currentIndexChanged.connect(self._fill_voices)
         self.tgt.currentIndexChanged.connect(self._fill_voices)
         self._fill_voices()
+        self.mode.currentIndexChanged.connect(self._mode_changed)
+        self._mode_changed()
+
+    def _mode_changed(self):
+        m = self.mode.currentData()
+        from_srt, extract = m == "from_srt", m == "extract_only"
+        self.srt_box.setVisible(from_srt)
+        self.g_asr.setEnabled(not from_srt)
+        self.g_tr.setEnabled(not extract)
+        # chế độ 'từ .srt': không dịch nữa, chỉ cần chọn ngôn ngữ đích (để chọn giọng đọc)
+        for w in (self.c_tr, self.tr_engine, self.oa_model):
+            w.setEnabled(not from_srt)
+        for w in (self.c_dub, self.tts_engine, self.voice, self.speed, self.vol,
+                  self.c_embed, self.c_burn, self.c_strip):
+            w.setEnabled(not extract)
+
+    def pick_srt(self):
+        p, _ = QFileDialog.getOpenFileName(self, "Chọn phụ đề đã dịch", "", "Phụ đề (*.srt)")
+        if p:
+            self.srt_file.setText(p)
 
     def _fill_voices(self):
         eng = self.tts_engine.currentData()
@@ -235,10 +285,13 @@ class MainWindow(QWidget):
     def _options(self):
         return Options(
             output_dir=self.out_dir.text().strip(),
+            mode=self.mode.currentData(),
+            srt_file=self.srt_file.text().strip(),
             do_transcribe=self.c_asr.isChecked(),
             do_translate=self.c_tr.isChecked(),
             do_dub=self.c_dub.isChecked(),
             embed_subs=self.c_embed.isChecked(),
+            burn_subs=self.c_burn.isChecked(),
             strip_metadata=self.c_strip.isChecked(),
             asr_engine=self.asr_engine.currentData(),
             whisper_model=self.model.currentText(),
@@ -260,7 +313,19 @@ class MainWindow(QWidget):
             QMessageBox.information(self, "Thiếu video", "Hãy thêm ít nhất một video.")
             return
         o = self._options()
-        if not any((o.do_transcribe, o.do_translate, o.do_dub, o.embed_subs, o.strip_metadata)):
+        if o.mode == "from_srt":
+            if len(files) > 1 and o.srt_file:
+                QMessageBox.information(
+                    self, "Nhiều video",
+                    "Bạn đang chọn nhiều video nên hãy để trống ô .srt và đặt tên mỗi file "
+                    "phụ đề là '<tên video>.<mã ngôn ngữ>.srt' (vd: phim1.vi.srt).")
+                return
+            tasks = (o.do_dub, o.embed_subs, o.burn_subs, o.strip_metadata)
+        elif o.mode == "full":
+            tasks = (o.do_transcribe, o.do_translate, o.do_dub, o.embed_subs, o.burn_subs, o.strip_metadata)
+        else:
+            tasks = (True,)
+        if not any(tasks):
             QMessageBox.information(self, "Chưa chọn tác vụ", "Hãy bật ít nhất một tính năng.")
             return
         self._save()
