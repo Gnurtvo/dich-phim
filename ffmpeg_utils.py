@@ -7,7 +7,7 @@ import sys
 import tempfile
 from pathlib import Path
 
-from common import Cancelled
+from common import Cancelled, Segment, read_srt, write_srt
 
 CREATE_NO_WINDOW = 0x08000000 if os.name == "nt" else 0
 
@@ -115,17 +115,53 @@ def _effective_font_size(video, size):
         return int(size)
 
 
+def _audio_rate(video):
+    try:
+        out = subprocess.run(
+            [find_tool("ffprobe"), "-v", "error", "-select_streams", "a:0", "-show_entries",
+             "stream=sample_rate", "-print_format", "json", str(video)],
+            capture_output=True, creationflags=CREATE_NO_WINDOW)
+        return int(json.loads(out.stdout)["streams"][0]["sample_rate"])
+    except Exception:
+        return 44100
+
+
 def final_mux(video, out_path, dub_wav=None, srt=None, orig_volume=0.1, strip_metadata=False,
-              burn_srt=None, sub_size=14, cancel=None):
-    """Ghép video + (tiếng lồng) + (phụ đề mềm hoặc ghi cứng), tùy chọn xóa metadata."""
+              burn_srt=None, sub_size=14, pitch=0.0, tempo=1.0, cancel=None):
+    """Ghép video + (tiếng lồng) + (phụ đề mềm hoặc ghi cứng), tùy chọn xóa metadata.
+
+    pitch (nửa cung) chỉ đổi cao độ âm thanh gốc, giữ nguyên độ dài.
+    tempo đổi tốc độ cả video lẫn âm thanh (kể cả tiếng lồng và phụ đề) để vẫn khớp nhau.
+    """
     video, out_path = os.path.abspath(video), os.path.abspath(out_path)
     dub_wav = os.path.abspath(dub_wav) if dub_wav else None
     srt = os.path.abspath(srt) if srt and not burn_srt else None
+    tempo = max(0.5, min(2.0, float(tempo or 1.0)))
+    pitch = max(-12.0, min(12.0, float(pitch or 0.0)))
+    change_tempo = abs(tempo - 1.0) > 1e-3
+    change_pitch = abs(pitch) > 1e-3
+    orig_audio = has_audio(video)
+
     sub_dir = None
-    if burn_srt:
+    if burn_srt or (srt and change_tempo):
         # ffmpeg chạy trong thư mục tạm với tên file đơn giản để tránh lỗi đường dẫn Windows (C:\...)
         sub_dir = tempfile.mkdtemp(prefix="vat_sub_")
+    if burn_srt:
         shutil.copyfile(burn_srt, os.path.join(sub_dir, "sub.srt"))
+    if srt and change_tempo:
+        # phụ đề mềm phải co/giãn theo tốc độ mới (phụ đề ghi cứng được áp trước khi đổi tốc độ nên tự khớp)
+        scaled = [Segment(s.start / tempo, s.end / tempo, s.text) for s in read_srt(srt)]
+        srt = os.path.join(sub_dir, "soft.srt")
+        write_srt(scaled, srt)
+
+    # đổi cao độ âm thanh gốc nhưng giữ độ dài: đổi sample rate rồi bù lại bằng atempo
+    orig_f = []
+    if change_pitch and orig_audio:
+        sr = _audio_rate(video)
+        new_sr = max(8000, round(sr * 2 ** (pitch / 12)))
+        orig_f = [f"asetrate={new_sr}", f"aresample={sr}", f"atempo={sr / new_sr:.6f}"]
+    tail = f"atempo={tempo:.5f}" if change_tempo else "anull"
+
     args = ["-i", video]
     idx = 1
     dub_idx = srt_idx = None
@@ -139,18 +175,26 @@ def final_mux(video, out_path, dub_wav=None, srt=None, orig_volume=0.1, strip_me
 
     args += ["-map", "0:v:0"]
     if dub_idx is not None:
-        if orig_volume > 0 and has_audio(video):
-            fc = (f"[0:a:0]volume={orig_volume:.2f}[o];[{dub_idx}:a]volume=1.0[d];"
-                  f"[o][d]amix=inputs=2:duration=longest:normalize=0[a]")
-            args += ["-filter_complex", fc, "-map", "[a]"]
+        if orig_volume > 0 and orig_audio:
+            ochain = ",".join([*orig_f, f"volume={orig_volume:.2f}"])
+            fc = (f"[0:a:0]{ochain}[o];[{dub_idx}:a]anull[d];"
+                  f"[o][d]amix=inputs=2:duration=longest:normalize=0[m];[m]{tail}[a]")
         else:
-            args += ["-map", f"{dub_idx}:a"]
-        args += ["-c:a", "aac", "-b:a", "192k"]
+            fc = f"[{dub_idx}:a]{tail}[a]"
+        args += ["-filter_complex", fc, "-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
+    elif orig_audio and (orig_f or change_tempo):
+        fc = f"[0:a:0]{','.join([*orig_f, tail])}[a]"
+        args += ["-filter_complex", fc, "-map", "[a]", "-c:a", "aac", "-b:a", "192k"]
     else:
         args += ["-map", "0:a?", "-c:a", "copy"]
+    vf = []
     if burn_srt:
         style = f"FontName=Arial,FontSize={_effective_font_size(video, sub_size)},Outline=1"
-        args += ["-vf", f"subtitles=sub.srt:force_style='{style}'",
+        vf.append(f"subtitles=sub.srt:force_style='{style}'")
+    if change_tempo:
+        vf.append(f"setpts=PTS/{tempo:.5f}")
+    if vf:
+        args += ["-vf", ",".join(vf),
                  "-c:v", "libx264", "-preset", "veryfast", "-crf", "20", "-pix_fmt", "yuv420p"]
     else:
         args += ["-c:v", "copy"]
@@ -165,7 +209,8 @@ def final_mux(video, out_path, dub_wav=None, srt=None, orig_volume=0.1, strip_me
             "-fflags", "+bitexact", "-flags:v", "+bitexact", "-flags:a", "+bitexact",
             "-metadata:s:v:0", "handler_name=", "-metadata:s:a:0", "handler_name=",
         ]
-    args += ["-shortest"] if dub_idx is None else []
+    # cắt đúng bằng độ dài video (sau khi đổi tốc độ): tiếng lồng/phụ đề không được kéo dài file
+    args += ["-t", f"{get_duration(video) / tempo:.3f}"]
     try:
         run_ffmpeg([*args, out_path], cancel, cwd=sub_dir)
     finally:

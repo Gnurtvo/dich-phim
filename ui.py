@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
 
 from common import EDGE_VOICES, LANGS, OPENAI_VOICES
 from pipeline import Options, process_video
+from translate import check_groq_keys, list_groq_models, pick_groq_model
 
 VIDEO_EXT = (".mp4", ".mkv", ".mov", ".avi", ".webm", ".flv", ".wmv", ".m4v", ".ts")
 
@@ -46,6 +47,22 @@ class Worker(QThread):
             self.done.emit(True, f"Xong. {n - errors}/{n} video thành công.")
         except Exception:
             self.done.emit(False, "Đã hủy.")
+
+
+class GroqTester(QThread):
+    done = Signal(list, list)
+
+    def __init__(self, keys, model):
+        super().__init__()
+        self.keys, self.model = keys, model
+
+    def run(self):
+        try:
+            results = check_groq_keys(self.keys, self.model)
+            models = list_groq_models(self.keys)
+            self.done.emit(results, models)
+        except Exception as e:
+            self.done.emit([(0, "", "fail", str(e))], [])
 
 
 class MainWindow(QWidget):
@@ -163,31 +180,22 @@ class MainWindow(QWidget):
         self.c_tr = QCheckBox("Dịch phụ đề")
         self.c_tr.setChecked(True)
         self.tr_engine = QComboBox()
-        self.tr_engine.addItem("Groq (nhiều API key xoay vòng)", "groq")
-        self.tr_engine.addItem("Gemini (dịch hiểu ngữ cảnh, key miễn phí)", "gemini")
+        self.tr_engine.addItem("Groq (nhiều API key xoay vòng) – mặc định", "groq")
         self.tr_engine.addItem("OpenAI (chất lượng cao)", "openai")
-        self.tr_engine.addItem("Ollama – dịch hiểu ngữ cảnh (offline, miễn phí)", "ollama")
         self.tgt = QComboBox()
         for n, c in LANGS:
             self.tgt.addItem(n, c)
         self.oa_model = QLineEdit("gpt-4o-mini")
         self.gq_model = QComboBox()
         self.gq_model.setEditable(True)
-        self.gq_model.addItems(["llama-3.3-70b-versatile", "llama-3.1-8b-instant", "openai/gpt-oss-20b"])
-        self.gm_model = QComboBox()
-        self.gm_model.setEditable(True)
-        self.gm_model.addItems(["gemini-3.8-flash", "gemini-3.5-flash-lite", "gemini-3.6-flash"])
-        self.ol_model = QComboBox()
-        self.ol_model.setEditable(True)
-        self.ol_model.addItems(["qwen2.5:7b", "qwen2.5:3b", "qwen2.5:14b", "gemma2:9b"])
+        self.gq_model.addItems(["llama-3.3-70b-versatile", "openai/gpt-oss-120b", "openai/gpt-oss-20b",
+                                "llama-3.1-8b-instant"])
         self.note = QLineEdit()
         self.note.setPlaceholderText("VD: phim tình cảm TQ, xưng hô anh/em, giữ tên nhân vật")
         f.addRow(self.c_tr)
         f.addRow("Engine:", self.tr_engine)
         f.addRow("Dịch sang:", self.tgt)
         f.addRow("Model Groq:", self.gq_model)
-        f.addRow("Model Gemini:", self.gm_model)
-        f.addRow("Model Ollama:", self.ol_model)
         f.addRow("Model OpenAI:", self.oa_model)
         f.addRow("Ngữ cảnh (tùy chọn):", self.note)
         self.g_tr = g
@@ -232,18 +240,40 @@ class MainWindow(QWidget):
         f.addRow(self.c_strip)
         right.addWidget(g)
 
+        g = QGroupBox("5. Âm thanh video gốc: cao độ & tốc độ")
+        f = QFormLayout(g)
+        self.pitch = QDoubleSpinBox()
+        self.pitch.setRange(-12.0, 12.0)
+        self.pitch.setSingleStep(0.5)
+        self.pitch.setDecimals(1)
+        self.pitch.setSuffix(" nửa cung")
+        self.tempo = QDoubleSpinBox()
+        self.tempo.setRange(0.5, 2.0)
+        self.tempo.setSingleStep(0.05)
+        self.tempo.setDecimals(2)
+        self.tempo.setValue(1.0)
+        self.tempo.setSuffix("x")
+        f.addRow("Cao độ (Pitch):", self.pitch)
+        f.addRow("Tốc độ (Tempo):", self.tempo)
+        hint = QLabel("Cao độ chỉ đổi giọng của âm thanh gốc, giữ nguyên độ dài (0 = không đổi). "
+                      "Tốc độ khác 1.00x sẽ đổi tốc độ cả video lẫn âm thanh (kể cả tiếng lồng và "
+                      "phụ đề) để vẫn khớp nhau; video phải encode lại nên chậm hơn.")
+        hint.setWordWrap(True)
+        f.addRow(hint)
+        self.g_pt = g
+        right.addWidget(g)
+
         g = QGroupBox("API key (nếu dùng)")
         f = QFormLayout(g)
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.Password)
-        self.gkey = QLineEdit()
-        self.gkey.setEchoMode(QLineEdit.Password)
-        self.gkey.setPlaceholderText("Lấy miễn phí tại aistudio.google.com")
         self.gqkeys = QPlainTextEdit()
         self.gqkeys.setFixedHeight(80)
         self.gqkeys.setPlaceholderText("Groq: mỗi dòng 1 key (gsk_...). Tự xoay vòng, key hết hạn mức thì chuyển key khác")
         f.addRow("Groq (nhiều key):", self.gqkeys)
-        f.addRow("Gemini:", self.gkey)
+        self.b_gtest = QPushButton("Kiểm tra API Groq")
+        self.b_gtest.clicked.connect(self.test_groq)
+        f.addRow(self.b_gtest)
         f.addRow("OpenAI:", self.key)
         right.addWidget(g)
         right.addStretch(1)
@@ -262,12 +292,12 @@ class MainWindow(QWidget):
         self.g_asr.setEnabled(not from_srt)
         self.g_tr.setEnabled(not extract)
         # chế độ 'từ .srt': không dịch nữa, chỉ cần chọn ngôn ngữ đích (để chọn giọng đọc)
-        for w in (self.c_tr, self.tr_engine, self.oa_model, self.gq_model, self.gm_model,
-                  self.ol_model, self.note):
+        for w in (self.c_tr, self.tr_engine, self.oa_model, self.gq_model, self.note):
             w.setEnabled(not from_srt)
         for w in (self.c_dub, self.tts_engine, self.voice, self.speed, self.vol,
                   self.c_embed, self.c_burn, self.sub_size, self.c_strip):
             w.setEnabled(not extract)
+        self.g_pt.setEnabled(not extract)
 
     def pick_srt(self):
         p, _ = QFileDialog.getOpenFileName(self, "Chọn phụ đề đã dịch", "", "Phụ đề (*.srt)")
@@ -338,9 +368,8 @@ class MainWindow(QWidget):
             openai_key=self.key.text().strip(),
             groq_keys=[k for k in re.split(r"[\s,;]+", self.gqkeys.toPlainText()) if k],
             groq_model=self.gq_model.currentText().strip() or "llama-3.3-70b-versatile",
-            gemini_key=self.gkey.text().strip(),
-            gemini_model=self.gm_model.currentText().strip() or "gemini-3.8-flash",
-            ollama_model=self.ol_model.currentText().strip() or "qwen2.5:7b",
+            pitch=self.pitch.value(),
+            tempo=self.tempo.value(),
             context_note=self.note.text().strip(),
         )
 
@@ -350,6 +379,7 @@ class MainWindow(QWidget):
             QMessageBox.information(self, "Thiếu video", "Hãy thêm ít nhất một video.")
             return
         o = self._options()
+        audio_fx = abs(o.pitch) > 1e-3 or abs(o.tempo - 1.0) > 1e-3
         if o.mode == "from_srt":
             if len(files) > 1 and o.srt_file:
                 QMessageBox.information(
@@ -357,9 +387,10 @@ class MainWindow(QWidget):
                     "Bạn đang chọn nhiều video nên hãy để trống ô .srt và đặt tên mỗi file "
                     "phụ đề là '<tên video>.<mã ngôn ngữ>.srt' (vd: phim1.vi.srt).")
                 return
-            tasks = (o.do_dub, o.embed_subs, o.burn_subs, o.strip_metadata)
+            tasks = (o.do_dub, o.embed_subs, o.burn_subs, o.strip_metadata, audio_fx)
         elif o.mode == "full":
-            tasks = (o.do_transcribe, o.do_translate, o.do_dub, o.embed_subs, o.burn_subs, o.strip_metadata)
+            tasks = (o.do_transcribe, o.do_translate, o.do_dub, o.embed_subs, o.burn_subs,
+                     o.strip_metadata, audio_fx)
         else:
             tasks = (True,)
         if not any(tasks):
@@ -375,6 +406,38 @@ class MainWindow(QWidget):
         self.b_start.setEnabled(False)
         self.b_stop.setEnabled(True)
         self.worker.start()
+
+    def test_groq(self):
+        keys = [k for k in re.split(r"[\s,;]+", self.gqkeys.toPlainText()) if k]
+        if not keys:
+            QMessageBox.information(self, "Thiếu key", "Hãy dán ít nhất một API key Groq (mỗi dòng một key).")
+            return
+        self.b_gtest.setEnabled(False)
+        self.b_gtest.setText("Đang kiểm tra...")
+        self._gtester = GroqTester(keys, self.gq_model.currentText().strip())
+        self._gtester.done.connect(self._groq_tested)
+        self._gtester.start()
+
+    def _groq_tested(self, results, models):
+        self.b_gtest.setEnabled(True)
+        self.b_gtest.setText("Kiểm tra API Groq")
+        icon = {"ok": "✔", "warn": "⚠", "fail": "✖"}
+        lines = [f"{icon.get(lv, '?')} Key #{n} ({tag}): {text}" for n, tag, lv, text in results]
+        good = sum(1 for r in results if r[2] == "ok")
+        warn = sum(1 for r in results if r[2] == "warn")
+        summary = f"{good}/{len(results)} key dùng được" + (f", {warn} key cần chú ý (xem chi tiết)" if warn else "")
+        if models:
+            # điền danh sách model thật sự dùng được vào ô Model Groq
+            cur = self.gq_model.currentText().strip()
+            best = cur if cur in models else (pick_groq_model(models) or models[0])
+            self.gq_model.clear()
+            self.gq_model.addItems(models)
+            self.gq_model.setCurrentText(best)
+            lines.append(f"Model dùng được với tài khoản ({len(models)}): " + ", ".join(models))
+            if best != cur:
+                lines.append(f"→ Model '{cur}' không có, đã chọn sẵn '{best}'. Bấm Kiểm tra lần nữa để thử lại.")
+        self.logbox.appendPlainText("\nKiểm tra Groq: " + summary + "\n" + "\n".join(lines))
+        QMessageBox.information(self, "Kiểm tra Groq", summary + "\n\n" + "\n".join(lines))
 
     def stop(self):
         if self.worker:
@@ -392,33 +455,32 @@ class MainWindow(QWidget):
     def _save(self):
         s = self.settings
         s.setValue("key", self.key.text())
-        s.setValue("gkey", self.gkey.text())
         s.setValue("gqkeys", self.gqkeys.toPlainText())
         s.setValue("gq_model", self.gq_model.currentText())
-        s.setValue("gm_model", self.gm_model.currentText())
-        s.setValue("ol_model", self.ol_model.currentText())
+        s.setValue("pitch", self.pitch.value())
+        s.setValue("tempo", self.tempo.value())
         s.setValue("note", self.note.text())
         s.setValue("sub_size", self.sub_size.value())
         s.setValue("out_dir", self.out_dir.text())
         s.setValue("model", self.model.currentText())
         s.setValue("tgt", self.tgt.currentIndex())
-        s.setValue("tr_engine", self.tr_engine.currentIndex())
+        s.setValue("tr_engine_v2", self.tr_engine.currentData())
         s.setValue("tts_engine", self.tts_engine.currentIndex())
 
     def _load(self):
         s = self.settings
         self.key.setText(s.value("key", ""))
-        self.gkey.setText(s.value("gkey", ""))
         self.gqkeys.setPlainText(s.value("gqkeys", ""))
         self.gq_model.setCurrentText(s.value("gq_model", "llama-3.3-70b-versatile"))
-        self.gm_model.setCurrentText(s.value("gm_model", "gemini-3.8-flash"))
-        self.ol_model.setCurrentText(s.value("ol_model", "qwen2.5:7b"))
+        self.pitch.setValue(float(s.value("pitch", 0.0)))
+        self.tempo.setValue(float(s.value("tempo", 1.0)))
         self.note.setText(s.value("note", ""))
         self.sub_size.setValue(int(s.value("sub_size", 14)))
         self.out_dir.setText(s.value("out_dir", ""))
         self.model.setCurrentText(s.value("model", "small"))
         self.tgt.setCurrentIndex(int(s.value("tgt", 0)))
-        self.tr_engine.setCurrentIndex(int(s.value("tr_engine", 0)))
+        # mặc định Groq; cài đặt cũ (Gemini/Ollama đã bỏ) cũng tự về Groq
+        self.tr_engine.setCurrentIndex(max(0, self.tr_engine.findData(s.value("tr_engine_v2", "groq"))))
         self.tts_engine.setCurrentIndex(int(s.value("tts_engine", 0)))
         self._fill_voices()
 

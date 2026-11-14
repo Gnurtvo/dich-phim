@@ -27,20 +27,20 @@ class Options:
     burn_subs: bool = False         # ghi cứng phụ đề vào hình (encode lại)
     sub_size: int = 14              # cỡ chữ phụ đề ghi cứng (nhỏ hơn = chữ bé hơn)
     strip_metadata: bool = True
+    # âm thanh video gốc
+    pitch: float = 0.0              # cao độ, đơn vị nửa cung (-12..+12), không đổi độ dài
+    tempo: float = 1.0              # tốc độ (0.5..2.0): đổi tốc độ cả video lẫn âm thanh
     # nhận dạng
     asr_engine: str = "local"       # local | openai
     whisper_model: str = "small"
     device: str = "auto"
     src_lang: str = "auto"
     # dịch
-    tr_engine: str = "groq"         # groq | google | gemini | openai | ollama
+    tr_engine: str = "groq"         # groq | openai
     groq_keys: list = field(default_factory=list)   # nhiều key Groq, tự xoay vòng
     groq_model: str = "llama-3.3-70b-versatile"
     tgt_lang: str = "vi"
     openai_model: str = "gpt-4o-mini"
-    gemini_model: str = "gemini-3.8-flash"
-    gemini_key: str = ""
-    ollama_model: str = "qwen2.5:7b"
     context_note: str = ""          # ghi chú ngữ cảnh cho bản dịch (thể loại, xưng hô, tên riêng...)
     # lồng tiếng
     tts_engine: str = "edge"        # edge | sapi | openai
@@ -78,7 +78,9 @@ def process_video(video: str, o: Options, log, progress, cancel):
         needs_asr = False
     else:
         needs_asr = o.do_transcribe or o.do_translate or o.do_dub or o.embed_subs or o.burn_subs
-    needs_video = mode != "extract_only" and (o.do_dub or o.embed_subs or o.burn_subs or o.strip_metadata)
+    audio_fx = abs(o.pitch) > 1e-3 or abs(o.tempo - 1.0) > 1e-3
+    needs_video = mode != "extract_only" and (
+        o.do_dub or o.embed_subs or o.burn_subs or o.strip_metadata or audio_fx)
 
     if needs_asr and not has_audio(video):
         raise RuntimeError("Video không có luồng âm thanh để nhận dạng.")
@@ -94,9 +96,6 @@ def process_video(video: str, o: Options, log, progress, cancel):
         raise RuntimeError("Bạn đã chọn tính năng dùng OpenAI nhưng chưa nhập API key.")
     if "groq" in used and not [k for k in o.groq_keys if k.strip()]:
         raise RuntimeError("Bạn đã chọn dịch bằng Groq nhưng chưa nhập API key Groq.")
-    if "gemini" in used and not o.gemini_key:
-        raise RuntimeError("Bạn đã chọn dịch bằng Gemini nhưng chưa nhập Gemini API key "
-                           "(lấy miễn phí tại aistudio.google.com).")
 
     segments = []
     src_srt = tgt_srt = None
@@ -183,6 +182,7 @@ def process_video(video: str, o: Options, log, progress, cancel):
             final_mux(video, out_video, dub_wav=dub_wav,
                       srt=sub_file if (o.embed_subs and not o.burn_subs) else None,
                       burn_srt=sub_file if o.burn_subs else None, sub_size=o.sub_size,
+                      pitch=o.pitch, tempo=o.tempo,
                       orig_volume=o.orig_volume, strip_metadata=o.strip_metadata,
                       cancel=cancel)
             log(f"✔ Hoàn tất: {out_video}")
