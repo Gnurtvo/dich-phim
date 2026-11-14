@@ -334,8 +334,9 @@ def _format_brief(d):
         out.append("Nhân vật: " + "; ".join(chars))
     if d.get("address_terms"):
         out.append(f"Xưng hô: {d['address_terms']}")
-    gl = [f"{g['src']} → {g['target']}" for g in (d.get("glossary") or [])
-          if isinstance(g, dict) and g.get("src") and g.get("target")]
+    gl = [f"{g['src']} → {g['target']}" for g in (d.get("glossary") or [])[:8]
+          if isinstance(g, dict) and g.get("src") and g.get("target")
+          and not re.search(r"có thể|lỗi nhận|\(|/|\?", str(g["target"]), re.I)]
     if gl:
         out.append("Thuật ngữ/tên riêng: " + "; ".join(gl))
     if d.get("style"):
@@ -353,7 +354,9 @@ def make_brief(segs, src, tgt, user_note, call, cancel, log):
         "\"characters\": [{\"name\": \"tên/cách gọi trong bản gốc\", \"target\": \"cách gọi nên dùng trong bản dịch\", "
         "\"gender\": \"nam/nữ/không rõ\", \"role\": \"vai trò hoặc quan hệ\"}], "
         "\"address_terms\": \"quan hệ giữa các nhân vật, ai xưng/gọi ai thế nào trong bản dịch (vd: vợ-chồng, chồng xưng anh gọi vợ là em, vợ xưng em gọi chồng là anh; suy ra giới tính người nói từ các câu gọi như 老婆/老公)\", "
-        "\"glossary\": [{\"src\": \"...\", \"target\": \"...\"}], \"style\": \"giọng điệu chung\"}.\n"
+        "\"glossary\": [{\"src\": \"tên riêng/thuật ngữ chắc chắn\", \"target\": \"MỘT bản dịch ngắn duy nhất\"}], \"style\": \"giọng điệu chung\"}.\n"
+        "glossary tối đa 8 mục, chỉ tên riêng/thuật ngữ thật sự lặp lại; target phải là MỘT bản dịch cụ thể, "
+        "tuyệt đối không ghi giải thích, nghi ngờ hay phương án \"có thể là…\", không ghi chú \"lỗi nhận dạng\". "
         "Chỉ ghi điều có cơ sở trong lời thoại; không chắc thì ghi \"không rõ\" hoặc bỏ trống, không bịa."
     )
     prompt = json.dumps({"ghi_chu_nguoi_dung": user_note or "", "loi_thoai": _sample_script(segs)},
