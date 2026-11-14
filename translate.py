@@ -48,6 +48,22 @@ def _system_prompt(src, tgt, note):
         "Quy tắc:\n"
         "- Dịch theo NGỮ CẢNH của cả đoạn hội thoại: giữ nhất quán tên riêng, cách xưng hô, "
         "đại từ, giọng điệu giữa các câu; hiểu câu bị cắt dở bằng các câu lân cận.\n"
+        "- NGƯỜI NÓI & XƯNG HÔ: phụ đề không ghi ai đang nói, hãy suy luận. Một câu gọi/xưng hô (vd 老婆 = chồng gọi vợ) "
+        "cho biết người nói câu đó và người đáp lại câu sau là người còn lại; lời thoại thường luân phiên giữa hai người. "
+        "Dịch đại từ 我/你 (I/you...) theo đúng vai: vợ chồng/người yêu thì chồng xưng anh – gọi vợ là em, "
+        "vợ xưng em – gọi chồng là anh. Tuyệt đối không đảo ngược vai (người nói là vợ thì \"我知道你…\" = \"Em biết anh…\"). "
+        "Câu gọi đơn thuần thì dịch như lời gọi (老婆 → \"Vợ ơi\", 老公 → \"Chồng ơi\", 宝贝 → \"Cưng ơi\").\n"
+        "- LỖI NHẬN DẠNG: lời thoại do máy nhận dạng giọng nói nên có thể sai chữ đồng âm/gần âm "
+        "(vd 奇异 trong ngữ cảnh tình cảm có thể là 急切/期待). Khi từ đúng nghĩa đen mà vô lý trong ngữ cảnh, "
+        "hãy dịch theo nghĩa hợp lý nhất theo cả đoạn hội thoại.\n"
+        "- Câu cụt như 但是/所以/我也… là phần nối của câu trước/sau: dịch sao cho liền mạch khi đọc nối "
+        "(\"nhưng mà…\", \"em cũng vậy mà\"), lặp lại ý đang nói thay vì dịch chết từng chữ.\n"
+        "- DỊCH THEO Ý, NHƯ NGƯỜI THẬT ĐANG NÓI: đây là lời thoại nói miệng, không phải văn viết. Hiểu người nói MUỐN NÓI GÌ "
+        "(ý định, cảm xúc) rồi diễn đạt lại bằng tiếng nói đời thường của người bản ngữ: dùng tiểu từ/ngữ khí "
+        "(ơi, nhé, mà, chứ, thôi, đi, nào, hả…), thành ngữ và cách nói quen thuộc thay vì dịch từng chữ. "
+        "Nếu bản dịch sát chữ nghe vô nghĩa hay gượng (vd \"rất kỳ lạ\" trong cảnh vợ chồng tình tứ), "
+        "chắc chắn từ gốc bị nhận sai hoặc là cách nói ẩn ý: hãy chọn nghĩa mà người ta thật sự muốn nói "
+        "(vd \"đang nôn nóng lắm\"). Không bao giờ để câu dịch khó hiểu.\n"
         "- Dịch tự nhiên như người bản ngữ, ngắn gọn, độ dài tương đương câu gốc vì bản dịch sẽ được đọc thành lời.\n"
         "- Không giải thích, không thêm ghi chú, không gộp hay tách câu.\n"
         '- Chỉ trả về JSON dạng {"translations":[{"id":<số>,"text":"<bản dịch>"}]} '
@@ -65,8 +81,8 @@ def _llm(segs, src, tgt, note, call, progress, cancel, log, batch=30):
         end = min(start + batch, len(segs))
         items = [{"id": k, "text": segs[k].text} for k in range(start, end)]
         before = [{"original": segs[j].text, "translated": out[j]}
-                  for j in range(max(0, start - 4), start) if out[j]]
-        after = [segs[j].text for j in range(end, min(len(segs), end + 3))]
+                  for j in range(max(0, start - 8), start) if out[j]]
+        after = [segs[j].text for j in range(end, min(len(segs), end + 6))]
 
         got = {}
         todo = items
@@ -336,7 +352,7 @@ def make_brief(segs, src, tgt, user_note, call, cancel, log):
         "Chỉ trả về một JSON dạng: {\"summary\": \"tóm tắt 2-4 câu: thể loại, bối cảnh, diễn biến\", "
         "\"characters\": [{\"name\": \"tên/cách gọi trong bản gốc\", \"target\": \"cách gọi nên dùng trong bản dịch\", "
         "\"gender\": \"nam/nữ/không rõ\", \"role\": \"vai trò hoặc quan hệ\"}], "
-        "\"address_terms\": \"quy ước xưng hô giữa các nhân vật trong bản dịch (vd: vợ-chồng gọi nhau anh/em)\", "
+        "\"address_terms\": \"quan hệ giữa các nhân vật, ai xưng/gọi ai thế nào trong bản dịch (vd: vợ-chồng, chồng xưng anh gọi vợ là em, vợ xưng em gọi chồng là anh; suy ra giới tính người nói từ các câu gọi như 老婆/老公)\", "
         "\"glossary\": [{\"src\": \"...\", \"target\": \"...\"}], \"style\": \"giọng điệu chung\"}.\n"
         "Chỉ ghi điều có cơ sở trong lời thoại; không chắc thì ghi \"không rõ\" hoặc bỏ trống, không bịa."
     )
