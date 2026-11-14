@@ -27,14 +27,25 @@ jobs:
           Copy-Item (Get-ChildItem ffx -Recurse -Filter ffmpeg.exe | Select-Object -First 1).FullName ffmpeg\
           Copy-Item (Get-ChildItem ffx -Recurse -Filter ffprobe.exe | Select-Object -First 1).FullName ffmpeg\
 
+      - name: Cai VieNeu-TTS (tuy chon, loi cung khong lam hong ban build)
+        shell: pwsh
+        continue-on-error: true
+        run: |
+          python -m pip install vieneu --prefer-binary
+          python -m pip show vieneu
+          python -c "import vieneu; print('vieneu import OK')"
+
       - name: Dong goi bang PyInstaller
-        shell: cmd
-        run: >
-          pyinstaller --noconfirm --windowed --name VideoAITool
-          --collect-all faster_whisper --collect-all ctranslate2 --collect-all argostranslate
-          --collect-all edge_tts --collect-all pyttsx3 --hidden-import pyttsx3.drivers.sapi5
-          --add-binary "ffmpeg\ffmpeg.exe;ffmpeg" --add-binary "ffmpeg\ffprobe.exe;ffmpeg"
-          main.py
+        shell: pwsh
+        run: |
+          $extra = @()
+          python -c "import vieneu" 2>$null
+          if ($LASTEXITCODE -eq 0) { $extra = @('--collect-all','vieneu','--collect-all','onnxruntime'); Write-Host 'Co VieNeu-TTS' } else { Write-Host 'Khong co VieNeu-TTS' }
+          pyinstaller --noconfirm --windowed --name VideoAITool `
+            --collect-all faster_whisper --collect-all ctranslate2 `
+            --collect-all edge_tts --collect-all pyttsx3 --hidden-import pyttsx3.drivers.sapi5 `
+            --add-binary "ffmpeg\ffmpeg.exe;ffmpeg" --add-binary "ffmpeg\ffprobe.exe;ffmpeg" `
+            @extra main.py
 
       - name: Tao bo cai dat
         shell: pwsh
