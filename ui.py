@@ -262,6 +262,7 @@ class MainWindow(QWidget):
         self.tts_engine.addItem("OpenAI TTS", "openai")
         self.tts_engine.addItem("FPT.AI (nhiều giọng Việt, cần API key)", "fpt")
         self.tts_engine.addItem("Google TTS (miễn phí, 1 giọng)", "google")
+        self.tts_engine.addItem("VieNeu-TTS (offline, tiếng Việt, tải model lần đầu)", "vieneu")
         self.voice = QComboBox()
         self.voice.setEditable(True)
         self.speed = QDoubleSpinBox()
@@ -384,6 +385,7 @@ class MainWindow(QWidget):
             self.voice.setEditText("")
             self.voice.lineEdit().setPlaceholderText(
                 "Giọng mặc định của Google" if eng == "google"
+                else "Để trống = giọng mặc định; hoặc gõ một phần tên/mã giọng VieNeu" if eng == "vieneu"
                 else "Một phần tên giọng SAPI (vd: An, Hoai My) – để trống = mặc định")
         if cur and eng == "sapi":
             self.voice.setEditText(cur)

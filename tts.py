@@ -1,6 +1,6 @@
 """Lồng tiếng: tạo giọng đọc cho từng đoạn rồi ghép đúng mốc thời gian.
 
-Engine: edge (Microsoft Edge TTS), fpt (FPT.AI, nhiều giọng Việt, cần API key), openai, sapi (offline
+Engine: vieneu (VieNeu-TTS, offline), edge (Microsoft Edge TTS), fpt (FPT.AI, nhiều giọng Việt, cần API key), openai, sapi (offline
 trên Windows), google (Google Dịch TTS, miễn phí, dùng làm giọng dự phòng khi engine chính lỗi).
 """
 import asyncio
@@ -161,6 +161,44 @@ def _synth_one_google(text, path, lang):
         f.write(data)
 
 
+# ---------------- VieNeu-TTS (offline, tiếng Việt) ----------------
+_VIENEU = {}
+
+
+def _vieneu_engine(log):
+    if "tts" not in _VIENEU:
+        try:
+            from vieneu import Vieneu
+        except Exception as e:
+            raise RuntimeError(f"Chưa có thư viện VieNeu-TTS trong bản cài này ({e}). "
+                               "Hãy build lại với 'pip install vieneu' hoặc chọn giọng khác.")
+        log("Đang nạp VieNeu-TTS (lần đầu sẽ tải model từ Hugging Face, cần mạng và vài phút)...")
+        _VIENEU["tts"] = Vieneu()
+    return _VIENEU["tts"]
+
+
+def _vieneu_voice(engine, name, log):
+    """Tìm giọng preset theo mã hoặc một phần tên; không thấy thì dùng giọng mặc định."""
+    if not name:
+        return None
+    try:
+        for label, vid in engine.list_preset_voices():
+            if name.lower() in (str(label) + " " + str(vid)).lower():
+                return vid
+    except Exception:
+        pass
+    log(f"Không thấy giọng VieNeu chứa '{name}', dùng giọng mặc định.")
+    return None
+
+
+def _synth_one_vieneu(engine, text, path, voice_id):
+    kw = {"voice": voice_id} if voice_id else {}
+    audio = engine.infer(text=text, **kw)
+    engine.save(audio, path)
+    if not os.path.exists(path) or os.path.getsize(path) == 0:
+        raise RuntimeError("VieNeu-TTS không tạo ra âm thanh")
+
+
 # ---------------- OpenAI / SAPI ----------------
 def _make_sapi():
     import pyttsx3
@@ -197,6 +235,10 @@ def synthesize_dub(segments, engine, voice, speed, api_key, total_duration, out_
     elif engine == "openai":
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
+    vn = vn_voice = None
+    if engine == "vieneu":
+        vn = _vieneu_engine(log)
+        vn_voice = _vieneu_voice(vn, voice, log)
 
     last_end = max((s.end for s in segments), default=0)
     length = int((max(total_duration, last_end) + 2) * SR)
@@ -204,7 +246,7 @@ def synthesize_dub(segments, engine, voice, speed, api_key, total_duration, out_
     skipped = failed = fallback = 0
 
     def raw_path(i):
-        return os.path.join(tmp_dir, f"clip{i}.{'wav' if engine == 'sapi' else 'mp3'}")
+        return os.path.join(tmp_dir, f"raw{i}.{'wav' if engine in ('sapi', 'vieneu') else 'mp3'}")
 
     # FPT tạo file bất đồng bộ nên gửi song song nhiều câu cho nhanh
     prefetch_err = {}
@@ -249,6 +291,8 @@ def synthesize_dub(segments, engine, voice, speed, api_key, total_duration, out_
                         raise prefetch_err[i]
                 elif engine == "openai":
                     _synth_one_openai(client, text, raw, voice, speed)
+                elif engine == "vieneu":
+                    _synth_one_vieneu(vn, text, raw, vn_voice)
                 elif engine == "google":
                     _synth_one_google(text, raw, lang)
                 else:
@@ -257,7 +301,7 @@ def synthesize_dub(segments, engine, voice, speed, api_key, total_duration, out_
             except Cancelled:
                 raise
             except Exception as e:
-                if engine not in ("edge", "fpt", "openai"):
+                if engine not in ("edge", "fpt", "openai", "vieneu"):
                     raise
                 # engine chính lỗi: dùng giọng Google dự phòng để câu này không bị im lặng
                 log(f"Câu {i + 1}: {engine} lỗi ({str(e)[:80]}) → dùng giọng Google dự phòng.")

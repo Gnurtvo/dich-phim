@@ -44,7 +44,7 @@ class Options:
     context_note: str = ""          # ghi chú ngữ cảnh cho bản dịch (thể loại, xưng hô, tên riêng...)
     use_brief: bool = True          # AI đọc trước toàn bộ lời thoại để rút ra cốt truyện/nhân vật/xưng hô
     # lồng tiếng
-    tts_engine: str = "edge"        # edge | fpt | sapi | openai | google
+    tts_engine: str = "edge"        # edge | fpt | sapi | openai | google | vieneu
     fpt_key: str = ""
     voice: str = ""
     tts_speed: float = 1.0
@@ -100,6 +100,9 @@ def process_video(video: str, o: Options, log, progress, cancel):
         if o.tgt_lang != "vi":
             raise RuntimeError("Giọng FPT.AI chỉ đọc tiếng Việt. Hãy chọn ngôn ngữ đích là Tiếng Việt "
                                "hoặc dùng engine TTS khác.")
+    if mode in ("full", "from_srt") and o.do_dub and o.tts_engine == "vieneu" and o.tgt_lang != "vi":
+        raise RuntimeError("VieNeu-TTS chỉ đọc tiếng Việt. Hãy chọn ngôn ngữ đích là Tiếng Việt "
+                           "hoặc dùng engine TTS khác.")
     if "openai" in used and not o.openai_key:
         raise RuntimeError("Bạn đã chọn tính năng dùng OpenAI nhưng chưa nhập API key.")
     if "groq" in used and not [k for k in o.groq_keys if k.strip()]:
