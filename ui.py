@@ -239,12 +239,16 @@ class MainWindow(QWidget):
                                 "llama-3.1-8b-instant"])
         self.note = QLineEdit()
         self.note.setPlaceholderText("VD: phim tình cảm TQ, xưng hô anh/em, giữ tên nhân vật")
+        self.c_brief = QCheckBox("AI đọc trước toàn bộ lời thoại để nắm cốt truyện, nhân vật, xưng hô "
+                                 "(dịch đúng hơn, tốn thêm token)")
+        self.c_brief.setChecked(True)
         f.addRow(self.c_tr)
         f.addRow("Engine:", self.tr_engine)
         f.addRow("Dịch sang:", self.tgt)
         f.addRow("Model Groq:", self.gq_model)
         f.addRow("Model OpenAI:", self.oa_model)
         f.addRow("Ngữ cảnh (tùy chọn):", self.note)
+        f.addRow(self.c_brief)
         self.g_tr = g
         right.addWidget(g)
 
@@ -348,7 +352,7 @@ class MainWindow(QWidget):
         self.g_asr.setEnabled(not from_srt)
         self.g_tr.setEnabled(not extract)
         # chế độ 'từ .srt': không dịch nữa, chỉ cần chọn ngôn ngữ đích (để chọn giọng đọc)
-        for w in (self.c_tr, self.tr_engine, self.oa_model, self.gq_model, self.note):
+        for w in (self.c_tr, self.tr_engine, self.oa_model, self.gq_model, self.note, self.c_brief):
             w.setEnabled(not from_srt)
         for w in (self.c_dub, self.tts_engine, self.voice, self.speed, self.vol,
                   self.c_embed, self.c_burn, self.sub_size, self.c_strip):
@@ -446,6 +450,7 @@ class MainWindow(QWidget):
             pitch=self.pitch.value(),
             tempo=self.tempo.value(),
             context_note=self.note.text().strip(),
+            use_brief=self.c_brief.isChecked(),
         )
 
     def start(self):

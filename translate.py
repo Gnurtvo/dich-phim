@@ -276,14 +276,98 @@ def _openai_caller(api_key, model):
     return call
 
 
+# ---------------- Bước phân tích trước: cốt truyện, nhân vật, xưng hô ----------------
+BRIEF_MAX_CHARS = 4500      # giới hạn lượng lời thoại gửi đi phân tích (tiết kiệm token/phút của Groq)
+BRIEF_NOTE_CHARS = 1800     # giới hạn độ dài tài liệu tham khảo gửi kèm mỗi cụm dịch
+
+
+def _loads_lenient(raw):
+    raw = re.sub(r"<think>.*?</think>", "", raw or "", flags=re.S).strip()
+    raw = re.sub(r"^```(?:json)?\s*|\s*```$", "", raw)
+    for cand in (raw, raw[raw.find("{"):raw.rfind("}") + 1]):
+        try:
+            return json.loads(cand)
+        except Exception:
+            continue
+    return None
+
+
+def _sample_script(segs):
+    """Lời thoại đánh số; nếu quá dài thì lấy mẫu đều trên toàn bộ video."""
+    lines = [f"{i + 1}. {s.text}" for i, s in enumerate(segs)]
+    total = sum(len(x) + 1 for x in lines)
+    if total > BRIEF_MAX_CHARS:
+        keep = max(8, int(len(lines) * BRIEF_MAX_CHARS / total))
+        step = len(lines) / keep
+        lines = [lines[int(k * step)] for k in range(keep)]
+    return "\n".join(lines)
+
+
+def _format_brief(d):
+    if not isinstance(d, dict):
+        return ""
+    out = []
+    if d.get("summary"):
+        out.append(f"Tóm tắt: {d['summary']}")
+    chars = []
+    for c in d.get("characters") or []:
+        if isinstance(c, dict) and c.get("name"):
+            extra = ", ".join(str(x) for x in (c.get("gender"), c.get("role")) if x and x != "không rõ")
+            chars.append(f"{c['name']} → {c.get('target') or c['name']}" + (f" ({extra})" if extra else ""))
+    if chars:
+        out.append("Nhân vật: " + "; ".join(chars))
+    if d.get("address_terms"):
+        out.append(f"Xưng hô: {d['address_terms']}")
+    gl = [f"{g['src']} → {g['target']}" for g in (d.get("glossary") or [])
+          if isinstance(g, dict) and g.get("src") and g.get("target")]
+    if gl:
+        out.append("Thuật ngữ/tên riêng: " + "; ".join(gl))
+    if d.get("style"):
+        out.append(f"Giọng điệu: {d['style']}")
+    return "\n".join(out)[:BRIEF_NOTE_CHARS]
+
+
+def make_brief(segs, src, tgt, user_note, call, cancel, log):
+    """Đọc toàn bộ lời thoại một lượt để rút ra tóm tắt, nhân vật, xưng hô, thuật ngữ. Lỗi thì bỏ qua."""
+    s, t = LANG_NAMES.get(src, src), LANG_NAMES.get(tgt, tgt)
+    system = (
+        f"Bạn là biên tập viên phụ đề. Bạn nhận toàn bộ lời thoại {s} của một video (các câu có đánh số, "
+        f"có thể có lỗi nhận dạng giọng nói) để lập TÀI LIỆU THAM KHẢO phục vụ việc dịch sang {t}.\n"
+        "Chỉ trả về một JSON dạng: {\"summary\": \"tóm tắt 2-4 câu: thể loại, bối cảnh, diễn biến\", "
+        "\"characters\": [{\"name\": \"tên/cách gọi trong bản gốc\", \"target\": \"cách gọi nên dùng trong bản dịch\", "
+        "\"gender\": \"nam/nữ/không rõ\", \"role\": \"vai trò hoặc quan hệ\"}], "
+        "\"address_terms\": \"quy ước xưng hô giữa các nhân vật trong bản dịch (vd: vợ-chồng gọi nhau anh/em)\", "
+        "\"glossary\": [{\"src\": \"...\", \"target\": \"...\"}], \"style\": \"giọng điệu chung\"}.\n"
+        "Chỉ ghi điều có cơ sở trong lời thoại; không chắc thì ghi \"không rõ\" hoặc bỏ trống, không bịa."
+    )
+    prompt = json.dumps({"ghi_chu_nguoi_dung": user_note or "", "loi_thoai": _sample_script(segs)},
+                        ensure_ascii=False)
+    try:
+        data = _loads_lenient(call(system, prompt, cancel, log))
+        return _format_brief(data)
+    except Cancelled:
+        raise
+    except Exception as e:
+        log(f"Không phân tích trước được cốt truyện ({str(e)[:80]}), dịch bình thường.")
+        return ""
+
+
 def translate_segments(segs, src, tgt, o, progress, cancel, log):
-    """o: pipeline.Options (dùng tr_engine, groq_*, openai_*, context_note)."""
+    """o: pipeline.Options (dùng tr_engine, groq_*, openai_*, context_note, use_brief)."""
     if not segs or src == tgt:
         return segs
     if o.tr_engine == "openai":
         call = _openai_caller(o.openai_key, o.openai_model)
-        return _llm(segs, src, tgt, o.context_note, call, progress, cancel, log)
-    call = _groq_caller(o.groq_keys, o.groq_model)
-    log(call.info)
-    # cụm nhỏ để mỗi yêu cầu tốn ít token, ít chạm giới hạn tokens/phút của từng key
-    return _llm(segs, src, tgt, o.context_note, call, progress, cancel, log, batch=20)
+        batch = 30
+    else:
+        call = _groq_caller(o.groq_keys, o.groq_model)
+        log(call.info)
+        batch = 20      # cụm nhỏ để mỗi yêu cầu tốn ít token, ít chạm giới hạn tokens/phút của từng key
+    note = o.context_note
+    if getattr(o, "use_brief", True) and len(segs) >= 8:
+        log("Phân tích trước cốt truyện, nhân vật và cách xưng hô...")
+        brief = make_brief(segs, src, tgt, o.context_note, call, cancel, log)
+        if brief:
+            log("Tài liệu tham khảo AI tự lập (dùng cho cả quá trình dịch):\n" + brief)
+            note = (note + "\n" if note else "") + "[Tài liệu tham khảo tự lập từ toàn bộ lời thoại]\n" + brief
+    return _llm(segs, src, tgt, note, call, progress, cancel, log, batch=batch)

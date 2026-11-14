@@ -42,6 +42,7 @@ class Options:
     tgt_lang: str = "vi"
     openai_model: str = "gpt-4o-mini"
     context_note: str = ""          # ghi chú ngữ cảnh cho bản dịch (thể loại, xưng hô, tên riêng...)
+    use_brief: bool = True          # AI đọc trước toàn bộ lời thoại để rút ra cốt truyện/nhân vật/xưng hô
     # lồng tiếng
     tts_engine: str = "edge"        # edge | fpt | sapi | openai | google
     fpt_key: str = ""
