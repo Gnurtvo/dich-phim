@@ -44,6 +44,28 @@ EDGE_VOICES = {
 
 OPENAI_VOICES = ["alloy", "echo", "fable", "onyx", "nova", "shimmer"]
 
+# Giọng Edge tiếng Việt kèm tinh chỉnh: "tên giọng;pitch=<Hz>;rate=<% tốc độ>".
+# Edge chỉ có 2 giọng Việt; các bản 'ngọt ngào', 'trầm ấm'... là chỉnh cao độ/tốc độ của 2 giọng đó.
+EDGE_VI_PRESETS = [
+    ("Hoài My – chuẩn (nữ)", "vi-VN-HoaiMyNeural"),
+    ("Hoài My – ngọt ngào, nhẹ nhàng (nữ)", "vi-VN-HoaiMyNeural;pitch=+10Hz;rate=-8"),
+    ("Hoài My – tươi vui, trẻ trung (nữ)", "vi-VN-HoaiMyNeural;pitch=+18Hz;rate=+6"),
+    ("Hoài My – chậm rãi, kể chuyện (nữ)", "vi-VN-HoaiMyNeural;pitch=-4Hz;rate=-15"),
+    ("Nam Minh – chuẩn (nam)", "vi-VN-NamMinhNeural"),
+    ("Nam Minh – trầm ấm (nam)", "vi-VN-NamMinhNeural;pitch=-10Hz;rate=-6"),
+]
+
+# Giọng FPT.AI (tiếng Việt)
+FPT_VOICES = [
+    ("Ban Mai – nữ miền Bắc", "banmai"),
+    ("Thu Minh – nữ miền Bắc", "thuminh"),
+    ("Lan Nhi – nữ miền Nam", "lannhi"),
+    ("Linh San – nữ miền Nam", "linhsan"),
+    ("Mỹ An – nữ miền Trung", "myan"),
+    ("Lê Minh – nam miền Bắc", "leminh"),
+    ("Gia Huy – nam miền Trung", "giahuy"),
+]
+
 
 def _ts(seconds: float) -> str:
     ms = int(round(max(seconds, 0) * 1000))

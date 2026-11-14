@@ -43,7 +43,8 @@ class Options:
     openai_model: str = "gpt-4o-mini"
     context_note: str = ""          # ghi chú ngữ cảnh cho bản dịch (thể loại, xưng hô, tên riêng...)
     # lồng tiếng
-    tts_engine: str = "edge"        # edge | sapi | openai
+    tts_engine: str = "edge"        # edge | fpt | sapi | openai | google
+    fpt_key: str = ""
     voice: str = ""
     tts_speed: float = 1.0
     orig_volume: float = 0.1
@@ -92,6 +93,12 @@ def process_video(video: str, o: Options, log, progress, cancel):
         used.append(o.tr_engine)
     if mode in ("full", "from_srt") and o.do_dub:
         used.append(o.tts_engine)
+    if mode in ("full", "from_srt") and o.do_dub and o.tts_engine == "fpt":
+        if not o.fpt_key:
+            raise RuntimeError("Bạn đã chọn giọng FPT.AI nhưng chưa nhập API key FPT.AI (console.fpt.ai).")
+        if o.tgt_lang != "vi":
+            raise RuntimeError("Giọng FPT.AI chỉ đọc tiếng Việt. Hãy chọn ngôn ngữ đích là Tiếng Việt "
+                               "hoặc dùng engine TTS khác.")
     if "openai" in used and not o.openai_key:
         raise RuntimeError("Bạn đã chọn tính năng dùng OpenAI nhưng chưa nhập API key.")
     if "groq" in used and not [k for k in o.groq_keys if k.strip()]:
@@ -168,9 +175,10 @@ def process_video(video: str, o: Options, log, progress, cancel):
 
             log("▶ Tạo giọng lồng tiếng...")
             dub_wav = os.path.join(tmp, "dub.wav")
-            synthesize_dub(final_segments, o.tts_engine, o.voice, o.tts_speed, o.openai_key,
+            tts_key = o.fpt_key if o.tts_engine == "fpt" else o.openai_key
+            synthesize_dub(final_segments, o.tts_engine, o.voice, o.tts_speed, tts_key,
                            get_duration(video), dub_wav, tmp,
-                           lambda v: progress(55 + int(v * 0.30)), cancel, log)
+                           lambda v: progress(55 + int(v * 0.30)), cancel, log, lang=o.tgt_lang)
         progress(85)
         check()
 

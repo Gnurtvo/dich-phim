@@ -5,12 +5,12 @@ from pathlib import Path
 
 from PySide6.QtCore import QSettings, Qt, QThread, Signal
 from PySide6.QtWidgets import (
-    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QSpinBox, QFileDialog, QFormLayout, QGroupBox,
+    QApplication, QCheckBox, QComboBox, QDoubleSpinBox, QFileDialog, QFormLayout, QFrame, QGroupBox,
     QHBoxLayout, QLabel, QLineEdit, QListWidget, QMessageBox, QPlainTextEdit, QProgressBar,
-    QPushButton, QSlider, QSpinBox, QVBoxLayout, QWidget,
+    QPushButton, QScrollArea, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from common import EDGE_VOICES, LANGS, OPENAI_VOICES
+from common import EDGE_VI_PRESETS, EDGE_VOICES, FPT_VOICES, LANGS, OPENAI_VOICES
 from pipeline import Options, process_video
 from translate import check_groq_keys, list_groq_models, pick_groq_model
 
@@ -65,14 +65,59 @@ class GroqTester(QThread):
             self.done.emit([(0, "", "fail", str(e))], [])
 
 
+class Section(QFrame):
+    """Mục có thể thu gọn / mở rộng: bấm vào tiêu đề hoặc nút mũi tên bên phải."""
+    toggled = Signal(bool)
+
+    def __init__(self, title, expanded=True):
+        super().__init__()
+        self.setFrameShape(QFrame.StyledPanel)
+        lay = QVBoxLayout(self)
+        lay.setContentsMargins(8, 4, 8, 8)
+        lay.setSpacing(6)
+        head = QHBoxLayout()
+        self.b_title = QPushButton(title)
+        self.b_title.setFlat(True)
+        self.b_title.setCursor(Qt.PointingHandCursor)
+        self.b_title.setStyleSheet("text-align: left; font-weight: bold; padding: 4px 2px;")
+        self.b_arrow = QPushButton()
+        self.b_arrow.setFixedWidth(36)
+        self.b_arrow.setToolTip("Thu gọn / mở rộng mục này")
+        for b in (self.b_title, self.b_arrow):
+            b.clicked.connect(self.toggle)
+        head.addWidget(self.b_title, 1)
+        head.addWidget(self.b_arrow)
+        lay.addLayout(head)
+        self.body = QWidget()
+        lay.addWidget(self.body)
+        self.set_expanded(expanded)
+
+    def is_expanded(self):
+        return self._on
+
+    def set_expanded(self, on):
+        self._on = bool(on)
+        self.body.setVisible(self._on)
+        self.b_arrow.setText("▾" if self._on else "▸")
+
+    def toggle(self):
+        self.set_expanded(not self._on)
+        self.toggled.emit(self._on)
+
+    def setEnabled(self, on):
+        # chỉ khóa phần nội dung; tiêu đề vẫn bấm thu gọn/mở rộng được
+        self.body.setEnabled(on)
+
+
 class MainWindow(QWidget):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Video AI Tool – Dịch, lồng tiếng, xóa metadata")
-        self.resize(980, 720)
+        self.resize(1100, 780)
         self.setAcceptDrops(True)
         self.settings = QSettings("VideoAITool", "App")
         self.worker = None
+        self.sections = {}
         self._build()
         self._load()
 
@@ -122,8 +167,10 @@ class MainWindow(QWidget):
         left.addLayout(run)
         root.addLayout(left, 3)
 
-        # cột phải: tùy chọn
-        right = QVBoxLayout()
+        # cột phải: tùy chọn (có thanh cuộn để các mục không bị ép chồng lên nhau)
+        right_w = QWidget()
+        right = QVBoxLayout(right_w)
+        right.setContentsMargins(0, 0, 6, 0)
 
         g = QGroupBox("Chế độ")
         v = QVBoxLayout(g)
@@ -151,8 +198,8 @@ class MainWindow(QWidget):
         v.addWidget(self.srt_box)
         right.addWidget(g)
 
-        g = QGroupBox("1. Nhận dạng giọng nói")
-        f = QFormLayout(g)
+        g = self._section("asr", "1. Nhận dạng giọng nói")
+        f = QFormLayout(g.body)
         self.c_asr = QCheckBox("Xuất phụ đề gốc (.srt)")
         self.c_asr.setChecked(True)
         self.asr_engine = QComboBox()
@@ -175,8 +222,8 @@ class MainWindow(QWidget):
         self.g_asr = g
         right.addWidget(g)
 
-        g = QGroupBox("2. Dịch bằng AI")
-        f = QFormLayout(g)
+        g = self._section("tr", "2. Dịch bằng AI")
+        f = QFormLayout(g.body)
         self.c_tr = QCheckBox("Dịch phụ đề")
         self.c_tr.setChecked(True)
         self.tr_engine = QComboBox()
@@ -201,14 +248,16 @@ class MainWindow(QWidget):
         self.g_tr = g
         right.addWidget(g)
 
-        g = QGroupBox("3. Lồng tiếng")
-        f = QFormLayout(g)
+        g = self._section("dub", "3. Lồng tiếng")
+        f = QFormLayout(g.body)
         self.c_dub = QCheckBox("Lồng tiếng (TTS)")
         self.c_dub.setChecked(True)
         self.tts_engine = QComboBox()
         self.tts_engine.addItem("Edge TTS (giọng tự nhiên, cần mạng)", "edge")
         self.tts_engine.addItem("Windows SAPI (offline)", "sapi")
         self.tts_engine.addItem("OpenAI TTS", "openai")
+        self.tts_engine.addItem("FPT.AI (nhiều giọng Việt, cần API key)", "fpt")
+        self.tts_engine.addItem("Google TTS (miễn phí, 1 giọng)", "google")
         self.voice = QComboBox()
         self.voice.setEditable(True)
         self.speed = QDoubleSpinBox()
@@ -220,6 +269,7 @@ class MainWindow(QWidget):
         self.vol.setValue(10)
         self.c_embed = QCheckBox("Nhúng phụ đề mềm vào video (bật/tắt được trong trình phát)")
         self.c_burn = QCheckBox("Ghi cứng phụ đề vào hình (luôn hiện, chậm hơn vì encode lại)")
+        self.c_burn.setChecked(True)
         f.addRow(self.c_dub)
         f.addRow("Engine:", self.tts_engine)
         f.addRow("Giọng:", self.voice)
@@ -233,15 +283,11 @@ class MainWindow(QWidget):
         f.addRow("Cỡ chữ phụ đề ghi cứng (nhỏ = chữ bé):", self.sub_size)
         right.addWidget(g)
 
-        g = QGroupBox("4. Quyền riêng tư")
-        f = QFormLayout(g)
+        g = self._section("video", "4. Cài đặt video")
+        f = QFormLayout(g.body)
         self.c_strip = QCheckBox("Xóa metadata video (thông tin thiết bị, vị trí, thời gian...)")
         self.c_strip.setChecked(True)
         f.addRow(self.c_strip)
-        right.addWidget(g)
-
-        g = QGroupBox("5. Âm thanh video gốc: cao độ & tốc độ")
-        f = QFormLayout(g)
         self.pitch = QDoubleSpinBox()
         self.pitch.setRange(-12.0, 12.0)
         self.pitch.setSingleStep(0.5)
@@ -263,8 +309,8 @@ class MainWindow(QWidget):
         self.g_pt = g
         right.addWidget(g)
 
-        g = QGroupBox("API key (nếu dùng)")
-        f = QFormLayout(g)
+        g = self._section("api", "5. API key (nếu dùng)")
+        f = QFormLayout(g.body)
         self.key = QLineEdit()
         self.key.setEchoMode(QLineEdit.Password)
         self.gqkeys = QPlainTextEdit()
@@ -275,9 +321,19 @@ class MainWindow(QWidget):
         self.b_gtest.clicked.connect(self.test_groq)
         f.addRow(self.b_gtest)
         f.addRow("OpenAI:", self.key)
+        self.fpt_key = QLineEdit()
+        self.fpt_key.setEchoMode(QLineEdit.Password)
+        self.fpt_key.setPlaceholderText("Lấy tại console.fpt.ai (chỉ cần khi dùng giọng FPT.AI)")
+        f.addRow("FPT.AI:", self.fpt_key)
         right.addWidget(g)
         right.addStretch(1)
-        root.addLayout(right, 2)
+        scroll = QScrollArea()
+        scroll.setWidget(right_w)
+        scroll.setWidgetResizable(True)
+        scroll.setFrameShape(QFrame.NoFrame)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        scroll.setMinimumWidth(440)
+        root.addWidget(scroll, 2)
 
         self.tts_engine.currentIndexChanged.connect(self._fill_voices)
         self.tgt.currentIndexChanged.connect(self._fill_voices)
@@ -309,14 +365,32 @@ class MainWindow(QWidget):
         cur = self.voice.currentText()
         self.voice.clear()
         if eng == "edge":
-            self.voice.addItems(EDGE_VOICES.get(self.tgt.currentData(), []))
+            if self.tgt.currentData() == "vi":
+                for label, spec in EDGE_VI_PRESETS:
+                    self.voice.addItem(label, spec)
+            else:
+                for name in EDGE_VOICES.get(self.tgt.currentData(), []):
+                    self.voice.addItem(name, name)
+        elif eng == "fpt":
+            for label, v in FPT_VOICES:
+                self.voice.addItem(label, v)
         elif eng == "openai":
             self.voice.addItems(OPENAI_VOICES)
         else:
             self.voice.setEditText("")
-            self.voice.lineEdit().setPlaceholderText("Một phần tên giọng SAPI (vd: An, Hoai My) – để trống = mặc định")
+            self.voice.lineEdit().setPlaceholderText(
+                "Giọng mặc định của Google" if eng == "google"
+                else "Một phần tên giọng SAPI (vd: An, Hoai My) – để trống = mặc định")
         if cur and eng == "sapi":
             self.voice.setEditText(cur)
+
+    def _voice_value(self):
+        """Giá trị giọng gửi cho TTS: dữ liệu của mục đang chọn (kèm tinh chỉnh), hoặc chữ người dùng tự gõ."""
+        text = self.voice.currentText().strip()
+        i = self.voice.currentIndex()
+        if i >= 0 and self.voice.itemText(i) == text and self.voice.itemData(i):
+            return self.voice.itemData(i)
+        return text
 
     # ---------- xử lý sự kiện ----------
     def dragEnterEvent(self, e):
@@ -362,7 +436,8 @@ class MainWindow(QWidget):
             tgt_lang=self.tgt.currentData(),
             openai_model=self.oa_model.text().strip() or "gpt-4o-mini",
             tts_engine=self.tts_engine.currentData(),
-            voice=self.voice.currentText().strip(),
+            voice=self._voice_value(),
+            fpt_key=self.fpt_key.text().strip(),
             tts_speed=self.speed.value(),
             orig_volume=self.vol.value() / 100,
             openai_key=self.key.text().strip(),
@@ -451,10 +526,22 @@ class MainWindow(QWidget):
         self.b_start.setEnabled(True)
         self.b_stop.setEnabled(False)
 
+    # ---------- các mục thu gọn được ----------
+    def _section(self, key, title):
+        sec = Section(title)
+        self.sections[key] = sec
+        sec.toggled.connect(lambda _on=None: self._save_sections())
+        return sec
+
+    def _save_sections(self):
+        for k, sec in self.sections.items():
+            self.settings.setValue(f"sec_{k}", sec.is_expanded())
+
     # ---------- lưu/đọc cài đặt ----------
     def _save(self):
         s = self.settings
         s.setValue("key", self.key.text())
+        s.setValue("fpt_key", self.fpt_key.text())
         s.setValue("gqkeys", self.gqkeys.toPlainText())
         s.setValue("gq_model", self.gq_model.currentText())
         s.setValue("pitch", self.pitch.value())
@@ -469,7 +556,10 @@ class MainWindow(QWidget):
 
     def _load(self):
         s = self.settings
+        for k, sec in self.sections.items():
+            sec.set_expanded(str(s.value(f"sec_{k}", "true")).lower() in ("true", "1"))
         self.key.setText(s.value("key", ""))
+        self.fpt_key.setText(s.value("fpt_key", ""))
         self.gqkeys.setPlainText(s.value("gqkeys", ""))
         self.gq_model.setCurrentText(s.value("gq_model", "llama-3.3-70b-versatile"))
         self.pitch.setValue(float(s.value("pitch", 0.0)))
