@@ -46,7 +46,6 @@ jobs:
           } else { Write-Host 'Khong co VieNeu-TTS' }
           pyinstaller --noconfirm --windowed --name VideoAITool `
             --collect-all faster_whisper --collect-all ctranslate2 `
-            --collect-all edge_tts --collect-all pyttsx3 --hidden-import pyttsx3.drivers.sapi5 `
             --add-binary "ffmpeg\ffmpeg.exe;ffmpeg" --add-binary "ffmpeg\ffprobe.exe;ffmpeg" `
             @extra main.py
 
