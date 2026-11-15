@@ -31,7 +31,7 @@ class Options:
     pitch: float = 0.0              # cao độ, đơn vị nửa cung (-12..+12), không đổi độ dài
     tempo: float = 1.0              # tốc độ (0.5..2.0): đổi tốc độ cả video lẫn âm thanh
     # nhận dạng
-    asr_engine: str = "local"       # local | openai
+    asr_engine: str = "local"       # local | openai | groq | groq-turbo
     whisper_model: str = "small"
     device: str = "auto"
     src_lang: str = "auto"
@@ -89,7 +89,7 @@ def process_video(video: str, o: Options, log, progress, cancel):
 
     used = []
     if needs_asr:
-        used.append(o.asr_engine)
+        used.append("groq" if o.asr_engine.startswith("groq") else o.asr_engine)
     if mode == "full" and o.do_translate:
         used.append(o.tr_engine)
     if mode in ("full", "from_srt") and o.do_dub:
@@ -115,10 +115,10 @@ def process_video(video: str, o: Options, log, progress, cancel):
     with tempfile.TemporaryDirectory(prefix="vat_") as tmp:
         # ---------- nhận dạng ----------
         if needs_asr:
-            from transcribe import transcribe_local, transcribe_openai
+            from transcribe import transcribe_groq, transcribe_local, transcribe_openai
 
             log("▶ Trích âm thanh...")
-            ext = "mp3" if o.asr_engine == "openai" else "wav"
+            ext = "mp3" if o.asr_engine != "local" else "wav"
             audio = os.path.join(tmp, f"audio.{ext}")
             extract_audio(video, audio, cancel)
             progress(5)
@@ -126,7 +126,10 @@ def process_video(video: str, o: Options, log, progress, cancel):
 
             log("▶ Nhận dạng giọng nói...")
             p = lambda v: progress(5 + int(v * 0.35))
-            if o.asr_engine == "openai":
+            if o.asr_engine in ("groq", "groq-turbo"):
+                segments, detected = transcribe_groq(audio, o.src_lang, o.groq_keys, o.asr_engine,
+                                                     p, cancel, log, tmp)
+            elif o.asr_engine == "openai":
                 segments, detected = transcribe_openai(audio, o.src_lang, o.openai_key, p, cancel, log)
             else:
                 segments, detected = transcribe_local(audio, o.whisper_model, o.src_lang,

@@ -205,6 +205,8 @@ class MainWindow(QWidget):
         self.asr_engine = QComboBox()
         self.asr_engine.addItem("Whisper offline (trên máy)", "local")
         self.asr_engine.addItem("OpenAI Whisper API", "openai")
+        self.asr_engine.addItem("Groq Whisper large-v3 (dùng key Groq, nhanh, chính xác)", "groq")
+        self.asr_engine.addItem("Groq Whisper large-v3-turbo (dùng key Groq, nhanh nhất)", "groq-turbo")
         self.model = QComboBox()
         self.model.addItems(["tiny", "base", "small", "medium", "large-v3"])
         self.model.setCurrentText("small")

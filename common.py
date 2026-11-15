@@ -28,6 +28,10 @@ LANGS = [
     ("ภาษาไทย", "th"),
 ]
 
+# Groq/OpenAI Whisper trả tên ngôn ngữ đầy đủ ("chinese"), cần đổi về mã 2 chữ cái
+LANG_ALIASES = {"chinese": "zh", "vietnamese": "vi", "english": "en", "japanese": "ja", "korean": "ko",
+                "french": "fr", "german": "de", "spanish": "es", "russian": "ru", "thai": "th"}
+
 # Giọng Edge TTS gợi ý theo ngôn ngữ đích
 EDGE_VOICES = {
     "vi": ["vi-VN-HoaiMyNeural", "vi-VN-NamMinhNeural"],
