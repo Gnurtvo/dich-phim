@@ -196,10 +196,20 @@ def _vieneu_voice(engine, name, log):
     return None
 
 
-def _synth_one_vieneu(engine, text, path, voice_id):
+_VN_TRACE = []
+
+
+def _synth_one_vieneu(engine, text, path, voice_id, log=None):
     kw = {"voice": voice_id} if voice_id else {}
-    audio = engine.infer(text=text, **kw)
-    engine.save(audio, path)
+    try:
+        audio = engine.infer(text=text, **kw)
+        engine.save(audio, path)
+    except Exception:
+        if log and not _VN_TRACE:      # chỉ in chi tiết một lần để dễ chẩn đoán
+            import traceback
+            _VN_TRACE.append(1)
+            log("Chi tiết lỗi VieNeu-TTS (gửi cho người hỗ trợ):\n" + traceback.format_exc()[-1500:])
+        raise
     if not os.path.exists(path) or os.path.getsize(path) == 0:
         raise RuntimeError("VieNeu-TTS không tạo ra âm thanh")
 
@@ -297,7 +307,7 @@ def synthesize_dub(segments, engine, voice, speed, api_key, total_duration, out_
                 elif engine == "openai":
                     _synth_one_openai(client, text, raw, voice, speed)
                 elif engine == "vieneu":
-                    _synth_one_vieneu(vn, text, raw, vn_voice)
+                    _synth_one_vieneu(vn, text, raw, vn_voice, log)
                 elif engine == "google":
                     _synth_one_google(text, raw, lang)
                 else:
