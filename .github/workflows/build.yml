@@ -40,7 +40,10 @@ jobs:
         run: |
           $extra = @()
           python -c "import vieneu" 2>$null
-          if ($LASTEXITCODE -eq 0) { $extra = @('--collect-all','vieneu','--collect-all','onnxruntime'); Write-Host 'Co VieNeu-TTS' } else { Write-Host 'Khong co VieNeu-TTS' }
+          if ($LASTEXITCODE -eq 0) {
+            $extra = (python collect_flags.py).Split(' ', [System.StringSplitOptions]::RemoveEmptyEntries)
+            Write-Host "Co VieNeu-TTS: $extra"
+          } else { Write-Host 'Khong co VieNeu-TTS' }
           pyinstaller --noconfirm --windowed --name VideoAITool `
             --collect-all faster_whisper --collect-all ctranslate2 `
             --collect-all edge_tts --collect-all pyttsx3 --hidden-import pyttsx3.drivers.sapi5 `
