@@ -173,7 +173,12 @@ def _vieneu_engine(log):
             raise RuntimeError(f"Chưa có thư viện VieNeu-TTS trong bản cài này ({e}). "
                                "Hãy build lại với 'pip install vieneu' hoặc chọn giọng khác.")
         log("Đang nạp VieNeu-TTS (lần đầu sẽ tải model từ Hugging Face, cần mạng và vài phút)...")
-        _VIENEU["tts"] = Vieneu()
+        try:
+            _VIENEU["tts"] = Vieneu()
+        except Exception as e:
+            import traceback
+            log("Chi tiết lỗi nạp VieNeu-TTS:\n" + traceback.format_exc()[-900:])
+            raise RuntimeError(f"Không nạp được VieNeu-TTS: {e}")
     return _VIENEU["tts"]
 
 
