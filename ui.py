@@ -1,4 +1,5 @@
 """Giao diện PySide6."""
+import json
 import re
 import threading
 from pathlib import Path
@@ -10,7 +11,7 @@ from PySide6.QtWidgets import (
     QPushButton, QScrollArea, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
-from common import EDGE_VI_PRESETS, EDGE_VOICES, FPT_VOICES, LANGS, OPENAI_VOICES
+from common import LANGS, OPENAI_VOICES
 from pipeline import Options, process_video
 from translate import check_groq_keys, list_groq_models, pick_groq_model
 
@@ -63,6 +64,19 @@ class GroqTester(QThread):
             self.done.emit(results, models)
         except Exception as e:
             self.done.emit([(0, "", "fail", str(e))], [])
+
+
+class VoiceLister(QThread):
+    """Nạp VieNeu-TTS ở luồng nền để lấy danh sách giọng."""
+    done = Signal(list, str)
+    log = Signal(str)
+
+    def run(self):
+        try:
+            from tts import list_vieneu_voices
+            self.done.emit(list_vieneu_voices(self.log.emit), "")
+        except Exception as e:
+            self.done.emit([], str(e))
 
 
 class Section(QFrame):
@@ -259,12 +273,9 @@ class MainWindow(QWidget):
         self.c_dub = QCheckBox("Lồng tiếng (TTS)")
         self.c_dub.setChecked(True)
         self.tts_engine = QComboBox()
-        self.tts_engine.addItem("Edge TTS (giọng tự nhiên, cần mạng)", "edge")
-        self.tts_engine.addItem("Windows SAPI (offline)", "sapi")
-        self.tts_engine.addItem("OpenAI TTS", "openai")
-        self.tts_engine.addItem("FPT.AI (nhiều giọng Việt, cần API key)", "fpt")
-        self.tts_engine.addItem("Google TTS (miễn phí, 1 giọng)", "google")
         self.tts_engine.addItem("VieNeu-TTS (offline, tiếng Việt, tải model lần đầu)", "vieneu")
+        self.tts_engine.addItem("OpenAI TTS", "openai")
+        self.tts_engine.addItem("Google TTS (miễn phí, 1 giọng)", "google")
         self.voice = QComboBox()
         self.voice.setEditable(True)
         self.speed = QDoubleSpinBox()
@@ -279,7 +290,15 @@ class MainWindow(QWidget):
         self.c_burn.setChecked(True)
         f.addRow(self.c_dub)
         f.addRow("Engine:", self.tts_engine)
-        f.addRow("Giọng:", self.voice)
+        self.b_voices = QPushButton("Tải danh sách giọng")
+        self.b_voices.setToolTip("Nạp VieNeu-TTS và liệt kê các giọng có sẵn (lần đầu cần mạng để tải model)")
+        self.b_voices.clicked.connect(self.load_voices)
+        vrow = QWidget()
+        vl = QHBoxLayout(vrow)
+        vl.setContentsMargins(0, 0, 0, 0)
+        vl.addWidget(self.voice, 1)
+        vl.addWidget(self.b_voices)
+        f.addRow("Giọng:", vrow)
         f.addRow("Tốc độ đọc:", self.speed)
         f.addRow("Âm gốc còn lại (%):", self.vol)
         f.addRow(self.c_embed)
@@ -328,10 +347,6 @@ class MainWindow(QWidget):
         self.b_gtest.clicked.connect(self.test_groq)
         f.addRow(self.b_gtest)
         f.addRow("OpenAI:", self.key)
-        self.fpt_key = QLineEdit()
-        self.fpt_key.setEchoMode(QLineEdit.Password)
-        self.fpt_key.setPlaceholderText("Lấy tại console.fpt.ai (chỉ cần khi dùng giọng FPT.AI)")
-        f.addRow("FPT.AI:", self.fpt_key)
         right.addWidget(g)
         right.addStretch(1)
         scroll = QScrollArea()
@@ -367,36 +382,58 @@ class MainWindow(QWidget):
         if p:
             self.srt_file.setText(p)
 
+    def _cached_vn_voices(self):
+        try:
+            return [tuple(x) for x in json.loads(self.settings.value("vn_voices", "[]"))]
+        except Exception:
+            return []
+
     def _fill_voices(self):
         eng = self.tts_engine.currentData()
         cur = self.voice.currentText()
         self.voice.clear()
-        if eng == "edge":
-            if self.tgt.currentData() == "vi":
-                for label, spec in EDGE_VI_PRESETS:
-                    self.voice.addItem(label, spec)
-            else:
-                for name in EDGE_VOICES.get(self.tgt.currentData(), []):
-                    self.voice.addItem(name, name)
-        elif eng == "fpt":
-            for label, v in FPT_VOICES:
-                self.voice.addItem(label, v)
+        self.b_voices.setVisible(eng == "vieneu")
+        if eng == "vieneu":
+            self.voice.addItem("Giọng mặc định", "")
+            for label, vid in self._cached_vn_voices():
+                self.voice.addItem(label, vid)
+            if not self._cached_vn_voices():
+                self.voice.lineEdit().setPlaceholderText("Bấm 'Tải danh sách giọng' để xem các giọng")
+            i = self.voice.findText(cur)
+            if i >= 0:
+                self.voice.setCurrentIndex(i)
         elif eng == "openai":
             self.voice.addItems(OPENAI_VOICES)
         else:
             self.voice.setEditText("")
-            self.voice.lineEdit().setPlaceholderText(
-                "Giọng mặc định của Google" if eng == "google"
-                else "Để trống = giọng mặc định; hoặc gõ một phần tên/mã giọng VieNeu" if eng == "vieneu"
-                else "Một phần tên giọng SAPI (vd: An, Hoai My) – để trống = mặc định")
-        if cur and eng == "sapi":
-            self.voice.setEditText(cur)
+            self.voice.lineEdit().setPlaceholderText("Giọng mặc định của Google")
+
+    def load_voices(self):
+        self.b_voices.setEnabled(False)
+        self.b_voices.setText("Đang nạp...")
+        self._vl = VoiceLister()
+        self._vl.log.connect(self.logbox.appendPlainText)
+        self._vl.done.connect(self._voices_loaded)
+        self._vl.start()
+
+    def _voices_loaded(self, voices, err):
+        self.b_voices.setEnabled(True)
+        self.b_voices.setText("Tải danh sách giọng")
+        if err or not voices:
+            QMessageBox.warning(self, "Không lấy được danh sách giọng",
+                                err or "VieNeu-TTS không trả về giọng nào.")
+            return
+        self.settings.setValue("vn_voices", json.dumps(voices, ensure_ascii=False))
+        keep = self.voice.currentText()
+        self._fill_voices()
+        i = self.voice.findText(keep)
+        self.voice.setCurrentIndex(max(0, i))
 
     def _voice_value(self):
         """Giá trị giọng gửi cho TTS: dữ liệu của mục đang chọn (kèm tinh chỉnh), hoặc chữ người dùng tự gõ."""
         text = self.voice.currentText().strip()
         i = self.voice.currentIndex()
-        if i >= 0 and self.voice.itemText(i) == text and self.voice.itemData(i):
+        if i >= 0 and self.voice.itemText(i) == text and self.voice.itemData(i) is not None:
             return self.voice.itemData(i)
         return text
 
@@ -445,7 +482,6 @@ class MainWindow(QWidget):
             openai_model=self.oa_model.text().strip() or "gpt-4o-mini",
             tts_engine=self.tts_engine.currentData(),
             voice=self._voice_value(),
-            fpt_key=self.fpt_key.text().strip(),
             tts_speed=self.speed.value(),
             orig_volume=self.vol.value() / 100,
             openai_key=self.key.text().strip(),
@@ -550,7 +586,6 @@ class MainWindow(QWidget):
     def _save(self):
         s = self.settings
         s.setValue("key", self.key.text())
-        s.setValue("fpt_key", self.fpt_key.text())
         s.setValue("gqkeys", self.gqkeys.toPlainText())
         s.setValue("gq_model", self.gq_model.currentText())
         s.setValue("pitch", self.pitch.value())
@@ -561,14 +596,14 @@ class MainWindow(QWidget):
         s.setValue("model", self.model.currentText())
         s.setValue("tgt", self.tgt.currentIndex())
         s.setValue("tr_engine_v2", self.tr_engine.currentData())
-        s.setValue("tts_engine", self.tts_engine.currentIndex())
+        s.setValue("tts_engine_v2", self.tts_engine.currentData())
+        s.setValue("voice_vieneu", self.voice.currentText() if self.tts_engine.currentData() == "vieneu" else s.value("voice_vieneu", ""))
 
     def _load(self):
         s = self.settings
         for k, sec in self.sections.items():
             sec.set_expanded(str(s.value(f"sec_{k}", "true")).lower() in ("true", "1"))
         self.key.setText(s.value("key", ""))
-        self.fpt_key.setText(s.value("fpt_key", ""))
         self.gqkeys.setPlainText(s.value("gqkeys", ""))
         self.gq_model.setCurrentText(s.value("gq_model", "llama-3.3-70b-versatile"))
         self.pitch.setValue(float(s.value("pitch", 0.0)))
@@ -580,8 +615,12 @@ class MainWindow(QWidget):
         self.tgt.setCurrentIndex(int(s.value("tgt", 0)))
         # mặc định Groq; cài đặt cũ (Gemini/Ollama đã bỏ) cũng tự về Groq
         self.tr_engine.setCurrentIndex(max(0, self.tr_engine.findData(s.value("tr_engine_v2", "groq"))))
-        self.tts_engine.setCurrentIndex(int(s.value("tts_engine", 0)))
+        self.tts_engine.setCurrentIndex(max(0, self.tts_engine.findData(s.value("tts_engine_v2", "vieneu"))))
         self._fill_voices()
+        if self.tts_engine.currentData() == "vieneu":
+            i = self.voice.findText(str(s.value("voice_vieneu", "")))
+            if i >= 0:
+                self.voice.setCurrentIndex(i)
 
     def closeEvent(self, e):
         if self.worker and self.worker.isRunning():

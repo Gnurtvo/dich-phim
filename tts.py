@@ -1,10 +1,8 @@
 """Lồng tiếng: tạo giọng đọc cho từng đoạn rồi ghép đúng mốc thời gian.
 
-Engine: vieneu (VieNeu-TTS, offline), edge (Microsoft Edge TTS), fpt (FPT.AI, nhiều giọng Việt, cần API key), openai, sapi (offline
-trên Windows), google (Google Dịch TTS, miễn phí, dùng làm giọng dự phòng khi engine chính lỗi).
+Engine: vieneu (VieNeu-TTS, offline, tiếng Việt), openai, google (Google Dịch TTS, miễn phí, cũng là giọng
+dự phòng khi engine chính lỗi ở một câu).
 """
-import asyncio
-import json
 import os
 import re
 import time
@@ -21,7 +19,6 @@ from ffmpeg_utils import convert_clip
 SR = 24000
 MAX_SPEEDUP = 1.6
 
-FPT_URL = "https://api.fpt.ai/hmi/tts/v5"
 GOOGLE_TTS_URL = "https://translate.google.com/translate_tts"
 GOOGLE_LANG = {"zh": "zh-CN"}
 UA = ("Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
@@ -64,84 +61,6 @@ def _split_text(text, n=180):
     if cur:
         chunks.append(cur)
     return chunks
-
-
-# ---------------- Edge TTS ----------------
-def _parse_edge_voice(spec):
-    """'vi-VN-HoaiMyNeural;pitch=+10Hz;rate=-8' -> (tên giọng, pitch, độ lệch tốc độ %)."""
-    parts = [p.strip() for p in (spec or "").split(";") if p.strip()]
-    name = parts[0] if parts else ""
-    pitch, rate_off = "+0Hz", 0
-    for p in parts[1:]:
-        k, _, v = p.partition("=")
-        try:
-            if k == "pitch":
-                pitch = f"{int(float(v.replace('Hz', ''))):+d}Hz"
-            elif k == "rate":
-                rate_off = int(float(v.replace("%", "")))
-        except ValueError:
-            pass
-    return name, pitch, rate_off
-
-
-def _synth_one_edge(text, path, spec, speed, cancel):
-    import edge_tts
-
-    name, pitch, rate_off = _parse_edge_voice(spec)
-    rate = f"{int(round((speed - 1) * 100)) + rate_off:+d}%"
-    last = None
-    for attempt in range(3):
-        if cancel.is_set():
-            raise Cancelled()
-        t = text
-        if attempt >= 1 and not re.search(r"[.!?…。！？]$", t):
-            t += "."          # lần thử lại: đổi nhẹ nội dung (lỗi "không có âm thanh" đôi khi chỉ xảy ra với một chuỗi cụ thể)
-        try:
-            if os.path.exists(path):
-                os.remove(path)
-            asyncio.run(edge_tts.Communicate(t, name, rate=rate, pitch=pitch).save(path))
-            if os.path.exists(path) and os.path.getsize(path) > 0:
-                time.sleep(0.15)   # giãn nhịp yêu cầu để tránh bị dịch vụ chặn tạm thời
-                return
-            last = RuntimeError("file âm thanh rỗng")
-        except Exception as e:
-            last = e
-        _sleep(1.0 + attempt, cancel)
-    raise last
-
-
-# ---------------- FPT.AI ----------------
-def _synth_one_fpt(text, path, voice, speed, api_key, cancel):
-    if len(text) < 3:
-        text += "..."          # FPT yêu cầu tối thiểu 3 ký tự
-    sp = max(-3, min(3, round((speed - 1) * 5)))
-    req = urllib.request.Request(
-        FPT_URL, data=text.encode("utf-8"), method="POST",
-        headers={"api_key": api_key, "voice": voice or "banmai", "speed": str(sp), "format": "mp3"})
-    try:
-        with urllib.request.urlopen(req, timeout=30) as r:
-            resp = json.loads(r.read().decode("utf-8"))
-    except urllib.error.HTTPError as e:
-        raise RuntimeError(f"FPT.AI lỗi {e.code}: {e.read().decode('utf-8', 'replace')[:150]}")
-    if resp.get("error") != 0 or not resp.get("async"):
-        raise RuntimeError(f"FPT.AI báo lỗi: {resp.get('message', resp)}")
-    url = resp["async"]
-    deadline = time.time() + 120
-    while time.time() < deadline:     # file được tạo bất đồng bộ (vài giây đến vài chục giây)
-        _sleep(1.5, cancel)
-        try:
-            with urllib.request.urlopen(urllib.request.Request(url), timeout=30) as r:
-                data = r.read()
-            if data:
-                with open(path, "wb") as f:
-                    f.write(data)
-                return
-        except urllib.error.HTTPError as e:
-            if e.code not in (403, 404, 409, 425):
-                raise RuntimeError(f"FPT.AI tải file lỗi {e.code}")
-        except urllib.error.URLError:
-            pass
-    raise RuntimeError("FPT.AI quá thời gian chờ tạo giọng")
 
 
 # ---------------- Google TTS (miễn phí, dùng làm dự phòng) ----------------
@@ -187,16 +106,27 @@ def _vieneu_voice(engine, name, log):
     if not name:
         return None
     try:
-        for label, vid in engine.list_preset_voices():
-            if name.lower() in (str(label) + " " + str(vid)).lower():
-                return vid
+        voices = [(str(l), str(v)) for l, v in engine.list_preset_voices()]
     except Exception:
-        pass
+        voices = []
+    low = name.lower()
+    for test in (lambda l, v: v.lower() == low,                     # mã giọng chính xác
+                 lambda l, v: l.lower() == low,                     # nhãn chính xác
+                 lambda l, v: low in (l + " " + v).lower()):        # một phần tên
+        for label, vid in voices:
+            if test(label, vid):
+                return vid
     log(f"Không thấy giọng VieNeu chứa '{name}', dùng giọng mặc định.")
     return None
 
 
 _VN_TRACE = []
+
+
+def list_vieneu_voices(log):
+    """Danh sách giọng có sẵn [(nhãn, mã)] – cần nạp model nên chạy ở luồng nền."""
+    eng = _vieneu_engine(log)
+    return [(str(l), str(v)) for l, v in eng.list_preset_voices()]
 
 
 def _synth_one_vieneu(engine, text, path, voice_id, log=None):
@@ -215,11 +145,6 @@ def _synth_one_vieneu(engine, text, path, voice_id, log=None):
 
 
 # ---------------- OpenAI / SAPI ----------------
-def _make_sapi():
-    import pyttsx3
-    return pyttsx3.init()
-
-
 def _synth_one_openai(client, text, path, voice, speed):
     with client.audio.speech.with_streaming_response.create(
         model="tts-1", voice=voice or "alloy", input=text, speed=max(0.25, min(4.0, speed))
@@ -236,18 +161,8 @@ def _read_wav(path):
 def synthesize_dub(segments, engine, voice, speed, api_key, total_duration, out_wav,
                    tmp_dir, progress, cancel, log, lang="vi"):
     """Tạo file WAV mono 24 kHz dài bằng video, mỗi câu đặt tại mốc thời gian gốc."""
-    sapi = None
     client = None
-    if engine == "sapi":
-        sapi = _make_sapi()
-        if voice:
-            for v in sapi.getProperty("voices"):
-                if voice.lower() in (v.name + v.id).lower():
-                    sapi.setProperty("voice", v.id)
-                    break
-            else:
-                log(f"Không thấy giọng SAPI chứa '{voice}', dùng giọng mặc định.")
-    elif engine == "openai":
+    if engine == "openai":
         from openai import OpenAI
         client = OpenAI(api_key=api_key)
     vn = vn_voice = None
@@ -261,32 +176,9 @@ def synthesize_dub(segments, engine, voice, speed, api_key, total_duration, out_
     skipped = failed = fallback = 0
 
     def raw_path(i):
-        return os.path.join(tmp_dir, f"raw{i}.{'wav' if engine in ('sapi', 'vieneu') else 'mp3'}")
+        return os.path.join(tmp_dir, f"raw{i}.{'wav' if engine == 'vieneu' else 'mp3'}")
 
-    # FPT tạo file bất đồng bộ nên gửi song song nhiều câu cho nhanh
-    prefetch_err = {}
     main_base, main_span = 0, 100
-    if engine == "fpt":
-        from concurrent.futures import ThreadPoolExecutor
-
-        jobs = [(i, _clean(s.text)) for i, s in enumerate(segments)]
-        jobs = [(i, t) for i, t in jobs if _speakable(t)]
-
-        def work(job):
-            i, t = job
-            try:
-                _synth_one_fpt(t, raw_path(i), voice, speed, api_key, cancel)
-            except Exception as e:
-                prefetch_err[i] = e
-
-        done = 0
-        with ThreadPoolExecutor(max_workers=4) as pool:
-            for _ in pool.map(work, jobs):
-                done += 1
-                progress(int(done / max(len(jobs), 1) * 50))
-        if cancel.is_set():
-            raise Cancelled()
-        main_base, main_span = 50, 50
 
     for i, seg in enumerate(segments):
         if cancel.is_set():
@@ -299,24 +191,18 @@ def synthesize_dub(segments, engine, voice, speed, api_key, total_duration, out_
         raw = raw_path(i)
         try:
             try:
-                if engine == "edge":
-                    _synth_one_edge(text, raw, voice, speed, cancel)
-                elif engine == "fpt":
-                    if i in prefetch_err:
-                        raise prefetch_err[i]
-                elif engine == "openai":
+                if engine == "openai":
                     _synth_one_openai(client, text, raw, voice, speed)
                 elif engine == "vieneu":
                     _synth_one_vieneu(vn, text, raw, vn_voice, log)
                 elif engine == "google":
                     _synth_one_google(text, raw, lang)
                 else:
-                    sapi.save_to_file(text, raw)
-                    sapi.runAndWait()
+                    raise RuntimeError(f"Engine TTS không hỗ trợ: {engine}")
             except Cancelled:
                 raise
             except Exception as e:
-                if engine not in ("edge", "fpt", "openai", "vieneu"):
+                if engine not in ("openai", "vieneu"):
                     raise
                 # engine chính lỗi: dùng giọng Google dự phòng để câu này không bị im lặng
                 log(f"Câu {i + 1}: {engine} lỗi ({str(e)[:80]}) → dùng giọng Google dự phòng.")

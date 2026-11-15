@@ -44,8 +44,7 @@ class Options:
     context_note: str = ""          # ghi chú ngữ cảnh cho bản dịch (thể loại, xưng hô, tên riêng...)
     use_brief: bool = True          # AI đọc trước toàn bộ lời thoại để rút ra cốt truyện/nhân vật/xưng hô
     # lồng tiếng
-    tts_engine: str = "edge"        # edge | fpt | sapi | openai | google | vieneu
-    fpt_key: str = ""
+    tts_engine: str = "vieneu"      # vieneu | openai | google
     voice: str = ""
     tts_speed: float = 1.0
     orig_volume: float = 0.1
@@ -94,12 +93,6 @@ def process_video(video: str, o: Options, log, progress, cancel):
         used.append(o.tr_engine)
     if mode in ("full", "from_srt") and o.do_dub:
         used.append(o.tts_engine)
-    if mode in ("full", "from_srt") and o.do_dub and o.tts_engine == "fpt":
-        if not o.fpt_key:
-            raise RuntimeError("Bạn đã chọn giọng FPT.AI nhưng chưa nhập API key FPT.AI (console.fpt.ai).")
-        if o.tgt_lang != "vi":
-            raise RuntimeError("Giọng FPT.AI chỉ đọc tiếng Việt. Hãy chọn ngôn ngữ đích là Tiếng Việt "
-                               "hoặc dùng engine TTS khác.")
     if mode in ("full", "from_srt") and o.do_dub and o.tts_engine == "vieneu" and o.tgt_lang != "vi":
         raise RuntimeError("VieNeu-TTS chỉ đọc tiếng Việt. Hãy chọn ngôn ngữ đích là Tiếng Việt "
                            "hoặc dùng engine TTS khác.")
@@ -182,7 +175,7 @@ def process_video(video: str, o: Options, log, progress, cancel):
 
             log("▶ Tạo giọng lồng tiếng...")
             dub_wav = os.path.join(tmp, "dub.wav")
-            tts_key = o.fpt_key if o.tts_engine == "fpt" else o.openai_key
+            tts_key = o.openai_key
             synthesize_dub(final_segments, o.tts_engine, o.voice, o.tts_speed, tts_key,
                            get_duration(video), dub_wav, tmp,
                            lambda v: progress(55 + int(v * 0.30)), cancel, log, lang=o.tgt_lang)
